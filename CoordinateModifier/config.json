@@ -1,0 +1,7 @@
+{
+  "name": "CM",
+  "type": "easyService",
+  "scriptLang": "python",
+  "description": "修改用户坐标系和工具坐标系的插件",
+  "version": "0.1"
+}
