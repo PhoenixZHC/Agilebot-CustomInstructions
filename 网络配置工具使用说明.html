@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>更新Mac地址使用说明</title>
+    <style>
+        body {
+            font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #ffffff;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            border-bottom: 2px solid #ecf0f1;
+            padding-bottom: 5px;
+            margin-top: 30px;
+        }
+        h3 {
+            color: #555;
+            margin-top: 20px;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: "Consolas", "Courier New", monospace;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            border-left: 4px solid #3498db;
+        }
+        ul, ol {
+            margin-left: 20px;
+        }
+        li {
+            margin: 5px 0;
+        }
+        .warning {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .error {
+            background-color: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border-left: 4px solid #17a2b8;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>更新Mac地址使用说明</h1>
+
+    <h2>PowerShell中文乱码解决方案</h2>
+    <div class="info">
+        <p>PowerShell中文乱码多是编码不匹配导致，可通过临时设置快速解决，也能配置永久生效，具体方法如下：</p>
+        <h3>1. 临时修复（仅当前窗口生效）</h3>
+        <p>打开PowerShell后输入命令 <code>chcp 65001</code> 切换为UTF-8编码，或输入 <code>$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8</code>，两种方式都能快速让当前窗口中文正常显示，关闭窗口后设置失效。</p>
+
+        <h3>2. 永久配置（通过配置文件）</h3>
+        <p>先输入 <code>New-Item -Path $PROFILE -Type File -Force</code> 创建配置文件；再输入 <code>code $PROFILE</code> 打开文件，添加 <code>chcp 65001</code> 和 <code>[Console]::OutputEncoding = [Console]::InputEncoding = [System.Text.Encoding]::UTF8</code>；保存后重启PowerShell，后续打开都会默认用UTF-8编码。</p>
+
+        <h3>3. 全局根治（修改系统设置）</h3>
+        <p>按下Win + I打开设置，进入"时间和语言→语言和区域"，点击"管理语言设置"；在弹出的"区域"窗口切换到"管理"选项卡，点击"更改系统区域设置"，勾选"Beta版：使用Unicode UTF-8提供全球语言支持"，重启电脑后，PowerShell及系统全局中文显示都会正常。</p>
+    </div>
+
+    <h2>一、工具简介</h2>
+    <p>本工具用于配置本地网络IP地址并更新控制柜的MAC地址。工具支持中文界面，操作简单，一键运行。</p>
+
+    <h2>二、系统要求</h2>
+    <ul>
+        <li><strong>操作系统</strong>: Windows 10/11</li>
+        <li><strong>权限要求</strong>: 管理员权限</li>
+        <li><strong>必需组件</strong>:
+            <ul>
+                <li>PowerShell 5.1 或更高版本</li>
+                <li>OpenSSH 客户端（Windows 10 1809+ 自带）</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h2>三、文件说明</h2>
+    <h3>主要文件</h3>
+    <ol>
+        <li><strong>更新Mac地址.bat</strong>
+            <ul>
+                <li>主启动文件</li>
+                <li>双击即可运行</li>
+                <li>自动检查管理员权限</li>
+                <li>自动设置UTF-8编码</li>
+            </ul>
+        </li>
+        <li><strong>network_config_simple.ps1</strong>
+            <ul>
+                <li>PowerShell主脚本</li>
+                <li>包含所有网络配置逻辑</li>
+                <li>自动处理中文显示</li>
+            </ul>
+        </li>
+    </ol>
+
+    <h2>四、使用步骤</h2>
+    <h3>步骤1：启动工具</h3>
+    <ol>
+        <li>双击 <strong>更新Mac地址.bat</strong> 文件</li>
+        <li>如果出现UAC提示，点击"是"允许运行</li>
+        <li>等待工具启动</li>
+    </ol>
+
+    <h3>步骤2：选择网络适配器</h3>
+    <p>工具会自动检测所有网络适配器，显示如下信息：</p>
+    <pre>[1] WLAN - Status: Connected
+[2] 蓝牙网络 - Status: Connected
+[3] 以太网2 - Status: Connected
+[4] 以太网 - Status: Connected</pre>
+    <p><strong>操作</strong>：</p>
+    <ul>
+        <li>根据提示输入数字（1-4）选择要配置的网络适配器</li>
+        <li>建议选择有线网络适配器（以太网）</li>
+    </ul>
+
+    <h3>步骤3：输入控制柜IP地址</h3>
+    <p><strong>操作</strong>：</p>
+    <ul>
+        <li>根据提示输入控制柜的IP地址</li>
+        <li>例如：<code>192.168.110.2</code></li>
+        <li>按Enter确认</li>
+    </ul>
+
+    <h3>步骤4：配置本地网络（步骤1）</h3>
+    <p>工具会自动：</p>
+    <ol>
+        <li>计算本地IP地址（与控制柜IP在同一子网）</li>
+        <li>计算子网掩码</li>
+        <li>配置本地网络适配器的IP地址</li>
+    </ol>
+    <p><strong>显示信息</strong>：</p>
+    <ul>
+        <li>控制柜IP: 192.168.110.2</li>
+        <li>计算出的本地IP: 192.168.110.xxx</li>
+        <li>子网掩码: 255.255.255.0</li>
+        <li>本地网络配置: 成功</li>
+    </ul>
+
+    <h3>步骤5：更新控制柜MAC地址（步骤2）</h3>
+    <p>工具会：</p>
+    <ol>
+        <li>连接到控制柜</li>
+        <li>提示输入SSH密码</li>
+    </ol>
+    <p><strong>操作</strong>：</p>
+    <ul>
+        <li>当出现密码提示时，输入密码：<code>root</code></li>
+        <li>密码输入会被隐藏（这是SSH的安全特性）</li>
+        <li>如果密码错误，会提示"密码错误，请重新输入"</li>
+        <li>最多可以重试5次</li>
+    </ul>
+    <div class="success">
+        <p><strong>成功提示</strong>：</p>
+        <ul>
+            <li>密码输入: 正确（绿色）</li>
+            <li>SSH连接成功，命令已执行</li>
+        </ul>
+    </div>
+    <div class="error">
+        <p><strong>失败提示</strong>：</p>
+        <p>如果控制柜连接不上，会显示：</p>
+        <ul>
+            <li>控制柜链接不上（红色）</li>
+            <li>请检查:（红色）
+                <ul>
+                    <li>1. 控制柜已开机（红色）</li>
+                    <li>2. 网线已连接（红色）</li>
+                    <li>3. IP地址正确: 192.168.110.2（红色）</li>
+                    <li>4. 本地IP在同一子网（红色）</li>
+                </ul>
+            </li>
+            <li>然后终止后续操作</li>
+        </ul>
+    </div>
+
+    <h2>五、常见问题</h2>
+    <h3>1. 窗口显示乱码或叠字</h3>
+    <p><strong>解决方法</strong>：</p>
+    <ul>
+        <li>不要调整窗口大小（窗口已锁定）</li>
+        <li>如果仍有问题，检查控制台字体设置：
+            <ol>
+                <li>右键点击窗口标题栏</li>
+                <li>选择"属性" → "字体"</li>
+                <li>选择支持中文的字体（推荐：新宋体、Consolas）</li>
+            </ol>
+        </li>
+    </ul>
+
+    <h3>2. 提示"需要管理员权限"</h3>
+    <p><strong>解决方法</strong>：</p>
+    <ul>
+        <li>右键点击 <strong>更新Mac地址.bat</strong></li>
+        <li>选择"以管理员身份运行"</li>
+    </ul>
+
+    <h3>3. 提示"未找到SSH客户端"</h3>
+    <p><strong>解决方法</strong>：</p>
+    <ol>
+        <li>打开"设置" → "应用" → "可选功能"</li>
+        <li>搜索"OpenSSH客户端"</li>
+        <li>如果没有，点击"添加功能"安装</li>
+    </ol>
+
+    <h3>4. 控制柜连接不上</h3>
+    <p><strong>检查项</strong>：</p>
+    <ul>
+        <li>✓ 控制柜已开机</li>
+        <li>✓ 网线已连接</li>
+        <li>✓ IP地址正确</li>
+        <li>✓ 本地IP在同一子网</li>
+    </ul>
+    <p><strong>解决方法</strong>：</p>
+    <ul>
+        <li>检查网线连接</li>
+        <li>确认控制柜IP地址正确</li>
+        <li>确认本地IP地址与控制柜IP在同一子网</li>
+        <li>检查控制柜SSH服务是否运行</li>
+    </ul>
+
+    <h3>5. 密码输入错误</h3>
+    <p><strong>解决方法</strong>：</p>
+    <ul>
+        <li>确认密码为：<code>root</code></li>
+        <li>密码输入时不会显示（这是SSH的安全特性）</li>
+        <li>可以重试，最多5次</li>
+    </ul>
+
+    <h3>6. MAC地址更新失败</h3>
+    <p><strong>可能原因</strong>：</p>
+    <ul>
+        <li>控制柜上的 <code>/etc/network/interfaces</code> 文件不存在</li>
+        <li>SSH连接失败</li>
+        <li>密码错误</li>
+    </ul>
+    <p><strong>解决方法</strong>：</p>
+    <ul>
+        <li>检查控制柜系统配置</li>
+        <li>确认SSH连接正常</li>
+        <li>确认密码正确</li>
+    </ul>
+
+    <h2>六、功能说明</h2>
+    <h3>1. 自动计算本地IP</h3>
+    <p>工具会自动计算本地IP地址：</p>
+    <ul>
+        <li>保持与控制柜IP的前3个字节相同</li>
+        <li>最后一个字节随机生成（2-255）</li>
+    </ul>
+
+    <h3>2. 自动计算子网掩码</h3>
+    <p>根据IP地址自动计算子网掩码：</p>
+    <table>
+        <tr>
+            <th>IP地址范围</th>
+            <th>子网掩码</th>
+        </tr>
+        <tr>
+            <td>10.x.x.x</td>
+            <td>255.0.0.0</td>
+        </tr>
+        <tr>
+            <td>172.16-31.x.x</td>
+            <td>255.255.0.0</td>
+        </tr>
+        <tr>
+            <td>192.168.x.x</td>
+            <td>255.255.255.0</td>
+        </tr>
+        <tr>
+            <td>其他</td>
+            <td>255.255.255.0</td>
+        </tr>
+    </table>
+
+    <h3>3. MAC地址更新</h3>
+    <p>工具会在控制柜上：</p>
+    <ol>
+        <li>备份 <code>/etc/network/interfaces</code> 文件</li>
+        <li>检查是否存在 <code>hwaddress ether</code> 行</li>
+        <li>如果存在，更新MAC地址</li>
+        <li>如果不存在，添加 <code>hwaddress ether</code> 行</li>
+        <li>生成随机MAC地址</li>
+    </ol>
+    <div class="warning">
+        <p><strong>重要提示</strong>：如果出现 <code>hwaddress ether</code>，必须显示完整的 <code>hwaddress ether</code> 行，包括具体的MAC地址。</p>
+        <p><strong>示例</strong>：</p>
+        <pre>hwaddress ether 00:01:02:04:A8:17</pre>
+        <p>工具会自动显示完整的 <code>hwaddress ether</code> 行，例如：<code>hwaddress ether 00:01:02:04:A8:17</code>，而不是只显示 <code>hwaddress ether</code>。</p>
+    </div>
+
+    <h3>4. 窗口锁定</h3>
+    <ul>
+        <li>窗口大小已锁定，无法调整</li>
+        <li>防止窗口大小改变导致的显示问题</li>
+    </ul>
+
+    <h2>七、注意事项</h2>
+    <div class="warning">
+        <ul>
+            <li><strong>管理员权限</strong>：工具需要管理员权限才能修改网络配置</li>
+            <li><strong>网络中断</strong>：配置IP地址时，网络可能会短暂中断</li>
+            <li><strong>密码安全</strong>：SSH密码输入时不会显示，这是正常的安全特性</li>
+            <li><strong>窗口大小</strong>：不要尝试调整窗口大小，已锁定防止显示问题</li>
+            <li><strong>文件编码</strong>：脚本文件必须使用UTF-8编码（无BOM）</li>
+        </ul>
+    </div>
+
+    <h2>八、技术支持</h2>
+    <p>如果遇到问题：</p>
+    <ol>
+        <li>检查错误提示信息</li>
+        <li>按照提示的检查项逐一排查</li>
+        <li>确认网络连接正常</li>
+        <li>确认控制柜SSH服务运行正常</li>
+    </ol>
+
+    <h2>九、更新日志</h2>
+    <h3>版本特性</h3>
+    <ul>
+        <li>支持中文界面</li>
+        <li>自动网络配置</li>
+        <li>自动MAC地址更新</li>
+        <li>密码重试功能</li>
+        <li>连接失败检测</li>
+        <li>窗口大小锁定</li>
+        <li>防止显示乱码</li>
+    </ul>
+
+    <hr>
+    <p><strong>版本</strong>: 1.0<br>
+    <strong>更新日期</strong>: 2025年12月5日<br>
+    <strong>作者</strong>: Spoil</p>
+</body>
+</html>
+
