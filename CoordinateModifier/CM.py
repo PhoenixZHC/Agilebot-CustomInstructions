@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 坐标系修改插件
+功能说明：
+本插件实现修改TF（工具坐标系）和UF（用户坐标系）的功能，以及R寄存器的自增自减功能。
+
 提供指令：
 1. SetTF - 工具坐标系（直接数值）
 2. SetUF - 用户坐标系（直接数值）
@@ -9,6 +12,11 @@
 4. SetUF_R - 用户坐标系（从R寄存器）
 5. SetTF_PR - 工具坐标系（从PR寄存器）
 6. SetUF_PR - 用户坐标系（从PR寄存器）
+7. Incr - R寄存器自增
+8. Decr - R寄存器自减
+
+版本：V1.0
+日期：2025-12-18
 """
 
 # 获取全局logger实例，只能在简单服务中使用
@@ -26,11 +34,23 @@ from Agilebot.IR.A.sdk_types import CoordinateSystemType
 # 全局Arm对象，用于长连接
 _global_arm = None
 
+# 明确指定导出的公开指令函数，隐藏私有辅助函数
+__all__ = [
+    'SetTF',
+    'SetUF',
+    'SetTF_R',
+    'SetUF_R',
+    'SetTF_PR',
+    'SetUF_PR',
+    'Incr',
+    'Decr'
+]
 
-def _get_robot_ip():
+
+def __get_robot_ip():
     """
     获取机器人IP地址
-    
+
     返回：
     - str: 机器人IP地址，失败返回None
     """
@@ -43,17 +63,17 @@ def _get_robot_ip():
         return None
 
 
-def _get_arm_connection():
+def __get_arm_connection():
     """
     获取Arm连接（长连接机制）
     如果未连接则连接，已连接则复用
-    
+
     返回：
     - Arm: Arm对象，失败返回None
     - str: 错误信息，成功返回None
     """
     global _global_arm
-    
+
     try:
         # 如果已有连接且连接状态正常，直接返回
         if _global_arm is not None:
@@ -63,33 +83,33 @@ def _get_arm_connection():
             except:
                 # 连接状态检查失败，重置连接
                 _global_arm = None
-        
+
         # 创建新连接
-        robot_ip = _get_robot_ip()
+        robot_ip = __get_robot_ip()
         if robot_ip is None:
             return None, "无法获取机器人IP地址"
-        
+
         _global_arm = Arm()
         ret = _global_arm.connect(robot_ip)
         if ret != StatusCodeEnum.OK:
             _global_arm = None
             return None, f"连接机器人失败，错误代码：{ret}"
-        
+
         return _global_arm, None
-        
+
     except Exception as ex:
         logger.error(f"获取Arm连接失败: {ex}")
         _global_arm = None
         return None, f"获取连接失败：{str(ex)}"
 
 
-def _get_param_name(param_index: int):
+def __get_param_name(param_index: int):
     """
     将参数编号转换为属性名
-    
+
     参数：
     - param_index: 1-6 (1=X, 2=Y, 3=Z, 4=A/r, 5=B/p, 6=C/y)
-    
+
     返回：
     - str: 属性名 ('x', 'y', 'z', 'r', 'p', 'y')
     """
@@ -107,7 +127,7 @@ def _get_param_name(param_index: int):
 def SetTF(ID: int, Pos: int, Value: float) -> dict:
     """
     工具坐标系
-    
+
     参数：
     - ID (int): ID号（数值1-30，0是基础坐标系不可修改）
     - Pos (int): 位置参数编号（1-6）
@@ -118,7 +138,7 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
       - 5: B角度（单位：度）
       - 6: C角度（单位：度）
     - Value (float): 参数值（输入框输入，数值类型）
-    
+
     返回：
     - dict: {"success": bool, "message": str, "error": str}
     """
@@ -130,7 +150,7 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": "ID号必须是数值类型"}
     if ID < 1 or ID > 30:
         return {"success": False, "error": f"ID号必须在1-30之间，当前值：{ID}"}
-    
+
     # 验证位置参数
     try:
         Pos = int(Pos)
@@ -138,31 +158,31 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": "位置参数必须是数值类型"}
     if Pos < 1 or Pos > 6:
         return {"success": False, "error": f"位置参数必须在1-6之间，当前值：{Pos}（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）"}
-    
-    param_attr = _get_param_name(Pos)
+
+    param_attr = __get_param_name(Pos)
     if param_attr is None:
         return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-    
+
     # 验证Value为数值类型
     try:
         Value = float(Value)
     except (ValueError, TypeError):
         return {"success": False, "error": f"无效的参数值：{Value}，必须是数值类型"}
-    
+
     # 获取Arm连接（长连接机制）
-    arm, error = _get_arm_connection()
+    arm, error = __get_arm_connection()
     if arm is None:
         return {"success": False, "error": error}
-    
+
     try:
         # 获取现有坐标系
         coordinate, ret = arm.coordinate_system.get(CoordinateSystemType.ToolFrame, ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"获取坐标系失败，错误代码：{ret}"}
-        
+
         # 更新参数值（保留三位小数）
         Value = round(float(Value), 3)
-        
+
         # 位置参数(1-3)更新到position，姿态参数(4-6)更新到orientation
         if Pos <= 3:
             # X, Y, Z 更新到 position
@@ -172,19 +192,19 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
             if not hasattr(coordinate, 'orientation'):
                 return {"success": False, "error": "坐标系对象没有orientation属性"}
             setattr(coordinate.orientation, param_attr, Value)
-        
+
         # 更新坐标系
         ret = arm.coordinate_system.update(CoordinateSystemType.ToolFrame, coordinate)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"更新坐标系失败，错误代码：{ret}"}
-        
+
         param_names = {1: 'X', 2: 'Y', 3: 'Z', 4: 'A', 5: 'B', 6: 'C'}
         param_display = param_names.get(Pos, f'参数{Pos}')
         return {
             "success": True,
             "message": f"TF坐标系[{ID}]的{param_display}参数已更新为{Value}"
         }
-        
+
     except Exception as ex:
         logger.error(f"SetTF执行失败: {ex}")
         return {"success": False, "error": f"执行失败：{str(ex)}"}
@@ -193,7 +213,7 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
 def SetUF(ID: int, Pos: int, Value: float) -> dict:
     """
     用户坐标系
-    
+
     参数：
     - ID (int): ID号（数值1-30，0是基础坐标系不可修改）
     - Pos (int): 位置参数编号（1-6）
@@ -204,7 +224,7 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
       - 5: B角度（单位：度）
       - 6: C角度（单位：度）
     - Value (float): 参数值（输入框输入，数值类型）
-    
+
     返回：
     - dict: {"success": bool, "message": str, "error": str}
     """
@@ -216,7 +236,7 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": "ID号必须是数值类型"}
     if ID < 1 or ID > 30:
         return {"success": False, "error": f"ID号必须在1-30之间，当前值：{ID}"}
-    
+
     # 验证位置参数
     try:
         Pos = int(Pos)
@@ -224,31 +244,31 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": "位置参数必须是数值类型"}
     if Pos < 1 or Pos > 6:
         return {"success": False, "error": f"位置参数必须在1-6之间，当前值：{Pos}（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）"}
-    
-    param_attr = _get_param_name(Pos)
+
+    param_attr = __get_param_name(Pos)
     if param_attr is None:
         return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-    
+
     # 验证Value为数值类型
     try:
         Value = float(Value)
     except (ValueError, TypeError):
         return {"success": False, "error": f"无效的参数值：{Value}，必须是数值类型"}
-    
+
     # 获取Arm连接（长连接机制）
-    arm, error = _get_arm_connection()
+    arm, error = __get_arm_connection()
     if arm is None:
         return {"success": False, "error": error}
-    
+
     try:
         # 获取现有坐标系
         coordinate, ret = arm.coordinate_system.get(CoordinateSystemType.UserFrame, ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"获取坐标系失败，错误代码：{ret}"}
-        
+
         # 更新参数值（保留三位小数）
         Value = round(float(Value), 3)
-        
+
         # 位置参数(1-3)更新到position，姿态参数(4-6)更新到orientation
         if Pos <= 3:
             # X, Y, Z 更新到 position
@@ -258,19 +278,19 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
             if not hasattr(coordinate, 'orientation'):
                 return {"success": False, "error": "坐标系对象没有orientation属性"}
             setattr(coordinate.orientation, param_attr, Value)
-        
+
         # 更新坐标系
         ret = arm.coordinate_system.update(CoordinateSystemType.UserFrame, coordinate)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"更新坐标系失败，错误代码：{ret}"}
-        
+
         param_names = {1: 'X', 2: 'Y', 3: 'Z', 4: 'A', 5: 'B', 6: 'C'}
         param_display = param_names.get(Pos, f'参数{Pos}')
         return {
             "success": True,
             "message": f"UF坐标系[{ID}]的{param_display}参数已更新为{Value}"
         }
-        
+
     except Exception as ex:
         logger.error(f"SetUF执行失败: {ex}")
         return {"success": False, "error": f"执行失败：{str(ex)}"}
@@ -279,7 +299,7 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
 def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
     """
     工具坐标系（从R寄存器读取值）
-    
+
     参数：
     - ID (int): ID号（数值1-30，0是基础坐标系不可修改）
     - Pos (int): 位置参数编号（1-6）
@@ -290,7 +310,7 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
       - 5: B角度（单位：度）
       - 6: C角度（单位：度）
     - R_ID (int): R寄存器编号
-    
+
     返回：
     - dict: {"success": bool, "message": str, "error": str}
     """
@@ -302,7 +322,7 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": "ID号必须是数值类型"}
     if ID < 1 or ID > 30:
         return {"success": False, "error": f"ID号必须在1-30之间，当前值：{ID}"}
-    
+
     # 验证位置参数
     try:
         Pos = int(Pos)
@@ -310,36 +330,36 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": "位置参数必须是数值类型"}
     if Pos < 1 or Pos > 6:
         return {"success": False, "error": f"位置参数必须在1-6之间，当前值：{Pos}（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）"}
-    
-    param_attr = _get_param_name(Pos)
+
+    param_attr = __get_param_name(Pos)
     if param_attr is None:
         return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-    
+
     # 验证R_ID为数值类型并转换为整数
     try:
         R_ID = int(R_ID)
     except (ValueError, TypeError):
         return {"success": False, "error": "R寄存器编号必须是数值类型"}
-    
+
     # 获取Arm连接（长连接机制）
-    arm, error = _get_arm_connection()
+    arm, error = __get_arm_connection()
     if arm is None:
         return {"success": False, "error": error}
-    
+
     try:
         # 读取R寄存器
         r_value, ret = arm.register.read_R(R_ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"读取R寄存器[{R_ID}]失败，错误代码：{ret}"}
-        
+
         # 获取现有坐标系
         coordinate, ret = arm.coordinate_system.get(CoordinateSystemType.ToolFrame, ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"获取坐标系失败，错误代码：{ret}"}
-        
+
         # 更新参数值（保留三位小数）
         Value = round(float(r_value), 3)
-        
+
         # 位置参数(1-3)更新到position，姿态参数(4-6)更新到orientation
         if Pos <= 3:
             # X, Y, Z 更新到 position
@@ -349,19 +369,19 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
             if not hasattr(coordinate, 'orientation'):
                 return {"success": False, "error": "坐标系对象没有orientation属性"}
             setattr(coordinate.orientation, param_attr, Value)
-        
+
         # 更新坐标系
         ret = arm.coordinate_system.update(CoordinateSystemType.ToolFrame, coordinate)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"更新坐标系失败，错误代码：{ret}"}
-        
+
         param_names = {1: 'X', 2: 'Y', 3: 'Z', 4: 'A', 5: 'B', 6: 'C'}
         param_display = param_names.get(Pos, f'参数{Pos}')
         return {
             "success": True,
             "message": f"TF坐标系[{ID}]的{param_display}参数已从R寄存器[{R_ID}]更新为{Value}"
         }
-        
+
     except Exception as ex:
         logger.error(f"SetTF_R执行失败: {ex}")
         return {"success": False, "error": f"执行失败：{str(ex)}"}
@@ -370,7 +390,7 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
 def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
     """
     用户坐标系（从R寄存器读取值）
-    
+
     参数：
     - ID (int): ID号（数值1-30，0是基础坐标系不可修改）
     - Pos (int): 位置参数编号（1-6）
@@ -381,7 +401,7 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
       - 5: B角度（单位：度）
       - 6: C角度（单位：度）
     - R_ID (int): R寄存器编号
-    
+
     返回：
     - dict: {"success": bool, "message": str, "error": str}
     """
@@ -393,7 +413,7 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": "ID号必须是数值类型"}
     if ID < 1 or ID > 30:
         return {"success": False, "error": f"ID号必须在1-30之间，当前值：{ID}"}
-    
+
     # 验证位置参数
     try:
         Pos = int(Pos)
@@ -401,36 +421,36 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": "位置参数必须是数值类型"}
     if Pos < 1 or Pos > 6:
         return {"success": False, "error": f"位置参数必须在1-6之间，当前值：{Pos}（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）"}
-    
-    param_attr = _get_param_name(Pos)
+
+    param_attr = __get_param_name(Pos)
     if param_attr is None:
         return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-    
+
     # 验证R_ID为数值类型并转换为整数
     try:
         R_ID = int(R_ID)
     except (ValueError, TypeError):
         return {"success": False, "error": "R寄存器编号必须是数值类型"}
-    
+
     # 获取Arm连接（长连接机制）
-    arm, error = _get_arm_connection()
+    arm, error = __get_arm_connection()
     if arm is None:
         return {"success": False, "error": error}
-    
+
     try:
         # 读取R寄存器
         r_value, ret = arm.register.read_R(R_ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"读取R寄存器[{R_ID}]失败，错误代码：{ret}"}
-        
+
         # 获取现有坐标系
         coordinate, ret = arm.coordinate_system.get(CoordinateSystemType.UserFrame, ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"获取坐标系失败，错误代码：{ret}"}
-        
+
         # 更新参数值（保留三位小数）
         Value = round(float(r_value), 3)
-        
+
         # 位置参数(1-3)更新到position，姿态参数(4-6)更新到orientation
         if Pos <= 3:
             # X, Y, Z 更新到 position
@@ -440,19 +460,19 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
             if not hasattr(coordinate, 'orientation'):
                 return {"success": False, "error": "坐标系对象没有orientation属性"}
             setattr(coordinate.orientation, param_attr, Value)
-        
+
         # 更新坐标系
         ret = arm.coordinate_system.update(CoordinateSystemType.UserFrame, coordinate)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"更新坐标系失败，错误代码：{ret}"}
-        
+
         param_names = {1: 'X', 2: 'Y', 3: 'Z', 4: 'A', 5: 'B', 6: 'C'}
         param_display = param_names.get(Pos, f'参数{Pos}')
         return {
             "success": True,
             "message": f"UF坐标系[{ID}]的{param_display}参数已从R寄存器[{R_ID}]更新为{Value}"
         }
-        
+
     except Exception as ex:
         logger.error(f"SetUF_R执行失败: {ex}")
         return {"success": False, "error": f"执行失败：{str(ex)}"}
@@ -461,11 +481,11 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
 def SetTF_PR(ID: int, PR_ID: int) -> dict:
     """
     工具坐标系（从PR寄存器读取完整位姿）
-    
+
     参数：
     - ID (int): ID号（数值1-30，0是基础坐标系不可修改）
     - PR_ID (int): PR寄存器编号
-    
+
     返回：
     - dict: {"success": bool, "message": str, "error": str}
     """
@@ -477,35 +497,35 @@ def SetTF_PR(ID: int, PR_ID: int) -> dict:
         return {"success": False, "error": "ID号必须是数值类型"}
     if ID < 1 or ID > 30:
         return {"success": False, "error": f"ID号必须在1-30之间，当前值：{ID}"}
-    
+
     # 验证PR_ID为数值类型并转换为整数
     try:
         PR_ID = int(PR_ID)
     except (ValueError, TypeError):
         return {"success": False, "error": "PR寄存器编号必须是数值类型"}
-    
+
     # 获取Arm连接（长连接机制）
-    arm, error = _get_arm_connection()
+    arm, error = __get_arm_connection()
     if arm is None:
         return {"success": False, "error": error}
-    
+
     try:
         # 读取PR寄存器
         pr_register, ret = arm.register.read_PR(PR_ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"读取PR寄存器[{PR_ID}]失败，错误代码：{ret}"}
-        
+
         # 检查PR寄存器数据类型
         if not hasattr(pr_register, 'poseRegisterData') or \
            not hasattr(pr_register.poseRegisterData, 'cartData') or \
            not hasattr(pr_register.poseRegisterData.cartData, 'position'):
             return {"success": False, "error": f"PR寄存器[{PR_ID}]数据格式不正确，必须包含位姿数据"}
-        
+
         # 获取现有坐标系
         coordinate, ret = arm.coordinate_system.get(CoordinateSystemType.ToolFrame, ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"获取坐标系失败，错误代码：{ret}"}
-        
+
         # 从PR寄存器读取XYZABC值并更新到坐标系（保留三位小数）
         # PR寄存器中的a/b/c对应坐标系中的r/p/y（绕X/Y/Z轴旋转角度）
         pr_position = pr_register.poseRegisterData.cartData.position
@@ -535,17 +555,35 @@ def SetTF_PR(ID: int, PR_ID: int) -> dict:
                     setattr(coordinate.position, 'c', round(pr_position.c, 3))
                 except:
                     logger.warning(f"无法设置绕Z轴旋转角度，请检查坐标系结构")
-        
+
         # 更新坐标系
         ret = arm.coordinate_system.update(CoordinateSystemType.ToolFrame, coordinate)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"更新坐标系失败，错误代码：{ret}"}
-        
+
+        # 获取r/p/y值用于返回消息（根据实际存储位置）
+        if hasattr(coordinate, 'orientation'):
+            r_val = coordinate.orientation.r
+            p_val = coordinate.orientation.p
+            y_val = coordinate.orientation.y
+        else:
+            r_val = getattr(coordinate.position, 'r', pr_position.a)
+            p_val = getattr(coordinate.position, 'p', pr_position.b)
+            # y值可能存储在不同的属性中
+            if hasattr(coordinate.position, 'yaw'):
+                y_val = coordinate.position.yaw
+            elif hasattr(coordinate.position, 'rotation_z'):
+                y_val = coordinate.position.rotation_z
+            elif hasattr(coordinate.position, 'c'):
+                y_val = coordinate.position.c
+            else:
+                y_val = pr_position.c
+
         return {
             "success": True,
-            "message": f"TF坐标系[{ID}]已从PR寄存器[{PR_ID}]更新：X={coordinate.position.x}, Y={coordinate.position.y}, Z={coordinate.position.z}, r={coordinate.position.r}, p={coordinate.position.p}, y={coordinate.position.y}"
+            "message": f"TF坐标系[{ID}]已从PR寄存器[{PR_ID}]更新：X={coordinate.position.x}, Y={coordinate.position.y}, Z={coordinate.position.z}, r={r_val}, p={p_val}, y={y_val}"
         }
-        
+
     except Exception as ex:
         logger.error(f"SetTF_PR执行失败: {ex}")
         return {"success": False, "error": f"执行失败：{str(ex)}"}
@@ -554,11 +592,11 @@ def SetTF_PR(ID: int, PR_ID: int) -> dict:
 def SetUF_PR(ID: int, PR_ID: int) -> dict:
     """
     用户坐标系（从PR寄存器读取完整位姿）
-    
+
     参数：
     - ID (int): ID号（数值1-30，0是基础坐标系不可修改）
     - PR_ID (int): PR寄存器编号
-    
+
     返回：
     - dict: {"success": bool, "message": str, "error": str}
     """
@@ -570,35 +608,35 @@ def SetUF_PR(ID: int, PR_ID: int) -> dict:
         return {"success": False, "error": "ID号必须是数值类型"}
     if ID < 1 or ID > 30:
         return {"success": False, "error": f"ID号必须在1-30之间，当前值：{ID}"}
-    
+
     # 验证PR_ID为数值类型并转换为整数
     try:
         PR_ID = int(PR_ID)
     except (ValueError, TypeError):
         return {"success": False, "error": "PR寄存器编号必须是数值类型"}
-    
+
     # 获取Arm连接（长连接机制）
-    arm, error = _get_arm_connection()
+    arm, error = __get_arm_connection()
     if arm is None:
         return {"success": False, "error": error}
-    
+
     try:
         # 读取PR寄存器
         pr_register, ret = arm.register.read_PR(PR_ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"读取PR寄存器[{PR_ID}]失败，错误代码：{ret}"}
-        
+
         # 检查PR寄存器数据类型
         if not hasattr(pr_register, 'poseRegisterData') or \
            not hasattr(pr_register.poseRegisterData, 'cartData') or \
            not hasattr(pr_register.poseRegisterData.cartData, 'position'):
             return {"success": False, "error": f"PR寄存器[{PR_ID}]数据格式不正确，必须包含位姿数据"}
-        
+
         # 获取现有坐标系
         coordinate, ret = arm.coordinate_system.get(CoordinateSystemType.UserFrame, ID)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"获取坐标系失败，错误代码：{ret}"}
-        
+
         # 从PR寄存器读取XYZABC值并更新到坐标系（保留三位小数）
         # PR寄存器中的a/b/c对应坐标系中的r/p/y（绕X/Y/Z轴旋转角度）
         pr_position = pr_register.poseRegisterData.cartData.position
@@ -628,17 +666,141 @@ def SetUF_PR(ID: int, PR_ID: int) -> dict:
                     setattr(coordinate.position, 'c', round(pr_position.c, 3))
                 except:
                     logger.warning(f"无法设置绕Z轴旋转角度，请检查坐标系结构")
-        
+
         # 更新坐标系
         ret = arm.coordinate_system.update(CoordinateSystemType.UserFrame, coordinate)
         if ret != StatusCodeEnum.OK:
             return {"success": False, "error": f"更新坐标系失败，错误代码：{ret}"}
-        
+
+        # 获取r/p/y值用于返回消息（根据实际存储位置）
+        if hasattr(coordinate, 'orientation'):
+            r_val = coordinate.orientation.r
+            p_val = coordinate.orientation.p
+            y_val = coordinate.orientation.y
+        else:
+            r_val = getattr(coordinate.position, 'r', pr_position.a)
+            p_val = getattr(coordinate.position, 'p', pr_position.b)
+            # y值可能存储在不同的属性中
+            if hasattr(coordinate.position, 'yaw'):
+                y_val = coordinate.position.yaw
+            elif hasattr(coordinate.position, 'rotation_z'):
+                y_val = coordinate.position.rotation_z
+            elif hasattr(coordinate.position, 'c'):
+                y_val = coordinate.position.c
+            else:
+                y_val = pr_position.c
+
         return {
             "success": True,
-            "message": f"UF坐标系[{ID}]已从PR寄存器[{PR_ID}]更新：X={coordinate.position.x}, Y={coordinate.position.y}, Z={coordinate.position.z}, r={coordinate.position.r}, p={coordinate.position.p}, y={coordinate.position.y}"
+            "message": f"UF坐标系[{ID}]已从PR寄存器[{PR_ID}]更新：X={coordinate.position.x}, Y={coordinate.position.y}, Z={coordinate.position.z}, r={r_val}, p={p_val}, y={y_val}"
         }
-        
+
     except Exception as ex:
         logger.error(f"SetUF_PR执行失败: {ex}")
+        return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
+def Incr(R_ID: int, Step: float = 1.0) -> dict:
+    """
+    R寄存器自增
+
+    参数：
+    - R_ID (int): R寄存器编号
+    - Step (float): 自增步长，默认为1.0
+
+    返回：
+    - dict: {"success": bool, "message": str, "error": str}
+    """
+    # 参数验证
+    # 验证R_ID为数值类型并转换为整数
+    try:
+        R_ID = int(R_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "R寄存器编号必须是数值类型"}
+
+    # 验证Step为数值类型并转换为浮点数
+    try:
+        Step = float(Step)
+    except (ValueError, TypeError):
+        return {"success": False, "error": f"自增步长必须是数值类型，当前值：{Step}"}
+
+    # 获取Arm连接（长连接机制）
+    arm, error = __get_arm_connection()
+    if arm is None:
+        return {"success": False, "error": error}
+
+    try:
+        # 读取R寄存器当前值
+        current_value, ret = arm.register.read_R(R_ID)
+        if ret != StatusCodeEnum.OK:
+            return {"success": False, "error": f"读取R寄存器[{R_ID}]失败，错误代码：{ret}"}
+
+        # 计算新值
+        new_value = float(current_value) + float(Step)
+
+        # 写入新值
+        ret = arm.register.write_R(R_ID, new_value)
+        if ret != StatusCodeEnum.OK:
+            return {"success": False, "error": f"写入R寄存器[{R_ID}]失败，错误代码：{ret}"}
+
+        return {
+            "success": True,
+            "message": f"R寄存器[{R_ID}]已自增{Step}，当前值：{current_value} -> {new_value}"
+        }
+
+    except Exception as ex:
+        logger.error(f"Incr执行失败: {ex}")
+        return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
+def Decr(R_ID: int, Step: float = 1.0) -> dict:
+    """
+    R寄存器自减
+
+    参数：
+    - R_ID (int): R寄存器编号
+    - Step (float): 自减步长，默认为1.0
+
+    返回：
+    - dict: {"success": bool, "message": str, "error": str}
+    """
+    # 参数验证
+    # 验证R_ID为数值类型并转换为整数
+    try:
+        R_ID = int(R_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "R寄存器编号必须是数值类型"}
+
+    # 验证Step为数值类型并转换为浮点数
+    try:
+        Step = float(Step)
+    except (ValueError, TypeError):
+        return {"success": False, "error": f"自减步长必须是数值类型，当前值：{Step}"}
+
+    # 获取Arm连接（长连接机制）
+    arm, error = __get_arm_connection()
+    if arm is None:
+        return {"success": False, "error": error}
+
+    try:
+        # 读取R寄存器当前值
+        current_value, ret = arm.register.read_R(R_ID)
+        if ret != StatusCodeEnum.OK:
+            return {"success": False, "error": f"读取R寄存器[{R_ID}]失败，错误代码：{ret}"}
+
+        # 计算新值（减去步长）
+        new_value = float(current_value) - float(Step)
+
+        # 写入新值
+        ret = arm.register.write_R(R_ID, new_value)
+        if ret != StatusCodeEnum.OK:
+            return {"success": False, "error": f"写入R寄存器[{R_ID}]失败，错误代码：{ret}"}
+
+        return {
+            "success": True,
+            "message": f"R寄存器[{R_ID}]已自减{Step}，当前值：{current_value} -> {new_value}"
+        }
+
+    except Exception as ex:
+        logger.error(f"Decr执行失败: {ex}")
         return {"success": False, "error": f"执行失败：{str(ex)}"}

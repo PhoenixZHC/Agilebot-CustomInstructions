@@ -2,8 +2,8 @@
   "name": "CM",
   "type": "easyService",
   "scriptLang": "python",
-  "description": "修改用户坐标系和工具坐标系的插件",
-  "version": "0.1",
+  "description": "用户自定义指令",
+  "version": "1.0.0",
   "functions": {
     "SetTF": {
       "description": "工具坐标系",
@@ -18,7 +18,14 @@
         "Pos": {
           "type": "select",
           "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
-          "options": [1, 2, 3, 4, 5, 6]
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
         },
         "Value": {
           "type": "float",
@@ -40,7 +47,14 @@
         "Pos": {
           "type": "select",
           "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
-          "options": [1, 2, 3, 4, 5, 6]
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
         },
         "Value": {
           "type": "float",
@@ -62,7 +76,14 @@
         "Pos": {
           "type": "select",
           "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
-          "options": [1, 2, 3, 4, 5, 6]
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
         },
         "R_ID": {
           "type": "int",
@@ -84,7 +105,14 @@
         "Pos": {
           "type": "select",
           "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
-          "options": [1, 2, 3, 4, 5, 6]
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
         },
         "R_ID": {
           "type": "int",
@@ -123,6 +151,36 @@
         "PR_ID": {
           "type": "int",
           "description": "PR寄存器编号",
+          "valueType": "number"
+        }
+      }
+    },
+    "Incr": {
+      "description": "R寄存器自增",
+      "parameters": {
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号",
+          "valueType": "number"
+        },
+        "Step": {
+          "type": "float",
+          "description": "自增步长，默认为1.0",
+          "valueType": "number"
+        }
+      }
+    },
+    "Decr": {
+      "description": "R寄存器自减",
+      "parameters": {
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号",
+          "valueType": "number"
+        },
+        "Step": {
+          "type": "float",
+          "description": "自减步长，默认为1.0",
           "valueType": "number"
         }
       }
