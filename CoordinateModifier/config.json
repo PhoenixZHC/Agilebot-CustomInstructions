@@ -184,6 +184,26 @@
           "valueType": "number"
         }
       }
+    },
+    "Strp": {
+      "description": "拆解字符串数据到PR寄存器",
+      "parameters": {
+        "SR_ID": {
+          "type": "int",
+          "description": "字符串寄存器编号，格式：第一个值是状态位（0=错误，1=正确），后面是分隔符分隔的数据。支持自动检测分隔符（逗号、分号、竖线、空格、制表符等）。示例：\"1,100.5,200.3,300.1,45.2,60.8,90.0\"（逗号）或\"1|100.5|200.3|300.1|45.2|60.8|90.0\"（竖线）",
+          "valueType": "number"
+        },
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号，用于输出状态位（0=数据错误，1=数据正确）",
+          "valueType": "number"
+        },
+        "PR_ID": {
+          "type": "int",
+          "description": "PR寄存器起始编号，每个PR寄存器存储6个分量（X,Y,Z,A,B,C），超过6个数据依次保存在PR[PR_ID+1], PR[PR_ID+2]等",
+          "valueType": "number"
+        }
+      }
     }
   }
 }
