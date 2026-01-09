@@ -203,14 +203,13 @@ CALL_SERVICE CM, Decr, R_ID=1, Step=1
 - 数据映射关系：数据1→PR的X坐标，数据2→PR的Y坐标，数据3→PR的C角度
 - 支持分隔符：逗号、分号、竖线、制表符、空格等（自动检测）
 - 每个PR寄存器存储6个分量（X,Y,Z,A,B,C），其中Z、A、B保留原值不变
-- 数据必须是3的倍数（X,Y,C为一组），每组数据写入一个PR寄存器
 
 **状态码说明：**
 - `R_ID_Status`：物料检测状态（1=有物料，0=无物料）
 - `R_ID_Error`：错误状态码（0=正确，1=错误）
   - 状态位=0（无物料）→ R_ID_Status=0, R_ID_Error=1（错误）
-  - 状态位=1且数据格式正确（3的倍数）→ R_ID_Status=1, R_ID_Error=0（正确）
-  - 状态位=1但数据格式错误（不是3的倍数）→ R_ID_Status=1, R_ID_Error=1（格式错误）
+  - 状态位=1且数据格式正确 → R_ID_Status=1, R_ID_Error=0（正确）
+  - 状态位=1但数据格式错误 → R_ID_Status=1, R_ID_Error=1（格式错误）
 
 **示例：**
 ```
@@ -247,7 +246,6 @@ CALL_SERVICE CM, Strp, SR_ID=1, R_ID_Status=1, PR_ID=1, R_ID_Error=2
 6. **Strp指令特殊说明：**
    - PR寄存器需要手动创建，使用前请确保PR寄存器已存在
    - R_ID_Status 和 R_ID_Error 寄存器如果不存在会自动创建
-   - 数据必须是3的倍数（X,Y,C为一组），每组数据写入一个PR寄存器
    - 状态位为0时，不会进行数据拆解，直接返回错误（R_ID_Status=0, R_ID_Error=1）
    - 写入PR寄存器后会立即验证数据是否正确写入
    - 建议在使用前检查 R_ID_Status 和 R_ID_Error 的值来判断执行结果
