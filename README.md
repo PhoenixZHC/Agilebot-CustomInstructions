@@ -277,5 +277,5 @@ CALL_SERVICE CM, Strp, SR_ID=1, R_ID_Status=1, PR_ID=1, R_ID_Error=2
 
 ---
 
-**CM 用户自定义指令插件 | 版本 V1.1 | © 2026**
+**CM 用户自定义指令插件 | © 2026**
 
