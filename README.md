@@ -222,7 +222,7 @@ CALL_SERVICE CM, Strp, SR_ID=1, R_ID_Status=1, PR_ID=1, R_ID_Error=2
 
 ---
 
-### 10. TFShift - 工具坐标系补正（基于视觉反馈）
+### 10. TFShift - 工具坐标系补正（基于视觉反馈Eye-to-Hand）
 
 通过读取不同的视觉目标点偏差与基准视觉位置的偏差，来计算工具坐标系的相对偏差，从而将偏差输出在工具坐标系中。
 
