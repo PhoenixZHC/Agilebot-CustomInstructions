@@ -212,6 +212,40 @@
           "valueType": "number"
         }
       }
+    },
+    "TFShift": {
+      "description": "工具坐标系补正（基于视觉反馈）",
+      "parameters": {
+        "InputTF_ID": {
+          "type": "int",
+          "description": "基准标定坐标系编号（1-30）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "ResultTF_ID": {
+          "type": "int",
+          "description": "最终算法计算后写入的坐标系编号（1-30）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "CamPose_ID": {
+          "type": "int",
+          "description": "拍照点PR寄存器编号",
+          "valueType": "number"
+        },
+        "RefVis_ID": {
+          "type": "int",
+          "description": "基准视觉模板数据PR寄存器编号（需要手动写入）",
+          "valueType": "number"
+        },
+        "ActVis_ID": {
+          "type": "int",
+          "description": "视觉输出的实际坐标数据PR寄存器编号（需要手动写入）",
+          "valueType": "number"
+        }
+      }
     }
   }
 }

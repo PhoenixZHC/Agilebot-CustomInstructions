@@ -15,6 +15,7 @@
 7. Incr - R寄存器自增
 8. Decr - R寄存器自减
 9. Strp - 拆解字符串数据到PR寄存器
+10. TFShift - 工具坐标系补正（基于视觉反馈）
 
 """
 
@@ -27,6 +28,7 @@ if logger is None:
 
 from Agilebot import Arm, Extension, StatusCodeEnum
 import copy
+import math
 
 # 全局Arm对象，用于长连接
 _global_arm = None
@@ -41,8 +43,150 @@ __all__ = [
     'SetUF_PR',
     'Incr',
     'Decr',
-    'Strp'
+    'Strp',
+    'TFShift'
 ]
+
+
+class PrecisionPose:
+    """高精度位姿类，用于坐标变换计算"""
+    def __init__(self, pose_list=None, x=0.0, y=0.0, z=0.0, w=0.0, p=0.0, r=0.0):
+        if pose_list is not None:
+            # 校验列表长度和类型
+            if len(pose_list) != 6:
+                raise ValueError("位姿列表必须包含6个元素：[X,Y,Z,W,P,R]")
+            # 转换为浮点数，保证高精度
+            self.X = float(pose_list[0])
+            self.Y = float(pose_list[1])
+            self.Z = float(pose_list[2])
+            self.W = float(pose_list[3])
+            self.P = float(pose_list[4])
+            self.R = float(pose_list[5])
+        else:
+            # 兼容原有单独参数初始化
+            self.X = float(x)
+            self.Y = float(y)
+            self.Z = float(z)
+            self.W = float(w)
+            self.P = float(p)
+            self.R = float(r)
+
+    def __str__(self):
+        """完整高精度字符串输出（12位小数）"""
+        return f"X={self.X:.12f}, Y={self.Y:.12f}, Z={self.Z:.12f}, W={self.W:.12f}, P={self.P:.12f}, R={self.R:.12f}"
+
+    def to_compact_string(self):
+        """精简字符串输出（6位小数）"""
+        return f"{self.X:.6f} {self.Y:.6f} {self.Z:.6f} {self.W:.6f} {self.P:.6f} {self.R:.6f}"
+
+    def to_list(self):
+        """转换为位姿列表 [X,Y,Z,W,P,R]，便于对接机器人SDK"""
+        return [self.X, self.Y, self.Z, self.W, self.P, self.R]
+
+
+class PrecisionTransform:
+    """高精度变换矩阵类，用于坐标变换计算"""
+    def __init__(self):
+        # 初始化4x4单位矩阵
+        self.M = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
+
+    @classmethod
+    def from_pose_zyx(cls, pose):
+        """从Z-Y-X欧拉角创建变换矩阵（对应C#的SetFromPoseZYX）"""
+        transform = cls()
+        w_rad = math.radians(pose.W)
+        p_rad = math.radians(pose.P)
+        r_rad = math.radians(pose.R)
+
+        cosR = math.cos(r_rad)
+        sinR = math.sin(r_rad)
+        cosP = math.cos(p_rad)
+        sinP = math.sin(p_rad)
+        cosW = math.cos(w_rad)
+        sinW = math.sin(w_rad)
+
+        # 核心：Z-Y-X旋转矩阵 Rz(R) * Ry(P) * Rx(W)（完全对齐C#的矩阵计算）
+        transform.M[0][0] = cosR * cosP
+        transform.M[0][1] = cosR * sinP * sinW - sinR * cosW
+        transform.M[0][2] = cosR * sinP * cosW + sinR * sinW
+        transform.M[0][3] = pose.X
+
+        transform.M[1][0] = sinR * cosP
+        transform.M[1][1] = sinR * sinP * sinW + cosR * cosW
+        transform.M[1][2] = sinR * sinP * cosW - cosR * sinW
+        transform.M[1][3] = pose.Y
+
+        transform.M[2][0] = -sinP
+        transform.M[2][1] = cosP * sinW
+        transform.M[2][2] = cosP * cosW
+        transform.M[2][3] = pose.Z
+
+        transform.M[3][0] = 0.0
+        transform.M[3][1] = 0.0
+        transform.M[3][2] = 0.0
+        transform.M[3][3] = 1.0
+        return transform
+
+    def get_pose_zyx(self):
+        """从变换矩阵提取Z-Y-X欧拉角（对应C#的GetPoseZYX）"""
+        pose = PrecisionPose()
+        pose.X = self.M[0][3]
+        pose.Y = self.M[1][3]
+        pose.Z = self.M[2][3]
+
+        # 提取欧拉角
+        sy = math.sqrt(self.M[0][0] ** 2 + self.M[1][0] ** 2)
+        singular = sy < 1e-12
+
+        if not singular:
+            pose.R = math.atan2(self.M[1][0], self.M[0][0])  # 绕Z轴
+            pose.P = math.atan2(-self.M[2][0], sy)          # 绕Y轴
+            pose.W = math.atan2(self.M[2][1], self.M[2][2])  # 绕X轴
+        else:
+            pose.R = math.atan2(-self.M[0][1], self.M[1][1])
+            pose.P = math.atan2(-self.M[2][0], sy)
+            pose.W = 0.0
+
+        # 弧度转角度
+        pose.W = math.degrees(pose.W)
+        pose.P = math.degrees(pose.P)
+        pose.R = math.degrees(pose.R)
+        return pose
+
+    def __mul__(self, other):
+        """矩阵乘法"""
+        result = PrecisionTransform()
+        for i in range(4):
+            for j in range(4):
+                sum_val = 0.0
+                for k in range(4):
+                    sum_val += self.M[i][k] * other.M[k][j]
+                result.M[i][j] = sum_val
+        return result
+
+    def inverse(self):
+        """矩阵求逆"""
+        inv = PrecisionTransform()
+
+        # 旋转部分转置
+        inv.M[0][0] = self.M[0][0]
+        inv.M[0][1] = self.M[1][0]
+        inv.M[0][2] = self.M[2][0]
+
+        inv.M[1][0] = self.M[0][1]
+        inv.M[1][1] = self.M[1][1]
+        inv.M[1][2] = self.M[2][1]
+
+        inv.M[2][0] = self.M[0][2]
+        inv.M[2][1] = self.M[1][2]
+        inv.M[2][2] = self.M[2][2]
+
+        # 平移部分计算
+        inv.M[0][3] = -(inv.M[0][0] * self.M[0][3] + inv.M[0][1] * self.M[1][3] + inv.M[0][2] * self.M[2][3])
+        inv.M[1][3] = -(inv.M[1][0] * self.M[0][3] + inv.M[1][1] * self.M[1][3] + inv.M[1][2] * self.M[2][3])
+        inv.M[2][3] = -(inv.M[2][0] * self.M[0][3] + inv.M[2][1] * self.M[1][3] + inv.M[2][2] * self.M[2][3])
+
+        return inv
 
 
 def __get_robot_ip():
@@ -1234,4 +1378,208 @@ def Strp(SR_ID: int, R_ID_Status: int, PR_ID: int, R_ID_Error: int) -> dict:
                 arm.register.write_R(R_ID_Error, 1)
         except:
             pass
+        return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
+def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, RefVis_ID: int = 61, ActVis_ID: int = 62) -> dict:
+    """
+    工具坐标系补正（基于视觉反馈）
+
+    该指令通过读取不同的视觉目标点偏差与基准视觉位置的偏差，来计算工具坐标系的相对偏差，
+    从而将偏差输出在工具坐标系中。
+
+    参数：
+    - InputTF_ID (int): 基准标定坐标系编号（1-30），默认1
+    - ResultTF_ID (int): 最终算法计算后写入的坐标系编号（1-30），默认3
+    - CamPose_ID (int): 拍照点PR寄存器编号，默认60
+    - RefVis_ID (int): 基准视觉模板数据PR寄存器编号，默认61（需要手动写入）
+    - ActVis_ID (int): 视觉输出的实际坐标数据PR寄存器编号，默认62（需要手动写入）
+
+    返回：
+    - dict: {"success": bool, "message": str, "error": str}
+    """
+    # 参数验证
+    try:
+        InputTF_ID = int(InputTF_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "InputTF_ID必须是数值类型"}
+    if InputTF_ID < 1 or InputTF_ID > 30:
+        return {"success": False, "error": f"InputTF_ID必须在1-30之间，当前值：{InputTF_ID}"}
+
+    try:
+        ResultTF_ID = int(ResultTF_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "ResultTF_ID必须是数值类型"}
+    if ResultTF_ID < 1 or ResultTF_ID > 30:
+        return {"success": False, "error": f"ResultTF_ID必须在1-30之间，当前值：{ResultTF_ID}"}
+
+    try:
+        CamPose_ID = int(CamPose_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "CamPose_ID必须是数值类型"}
+
+    try:
+        RefVis_ID = int(RefVis_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "RefVis_ID必须是数值类型"}
+
+    try:
+        ActVis_ID = int(ActVis_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "ActVis_ID必须是数值类型"}
+
+    # 获取Arm连接（长连接机制）
+    arm, error = __get_arm_connection()
+    if arm is None:
+        return {"success": False, "error": error}
+
+    try:
+        # 读取基准工具坐标系数据（SDK 2.0.0.0使用TF子类）
+        logger.info(f"读取基准工具坐标系[{InputTF_ID}]")
+        coordinate, ret = arm.coordinate_system.TF.get(InputTF_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"读取基准工具坐标系[{InputTF_ID}]失败，错误代码：{error_msg}"}
+        # SDK 2.0.0.0中，坐标系数据存储在data属性中，直接包含x/y/z/a/b/c
+        # 转换为W/P/R格式（W绕X轴，P绕Y轴，R绕Z轴，对应a/b/c）
+        tool_data = [
+            coordinate.data.x,
+            coordinate.data.y,
+            coordinate.data.z,
+            coordinate.data.a,  # W (绕X轴) = a
+            coordinate.data.b,  # P (绕Y轴) = b
+            coordinate.data.c   # R (绕Z轴) = c
+        ]
+        ut1_ut0 = PrecisionPose(tool_data)
+
+        # 读取拍照点位姿（UT1在UF1中的位姿）
+        logger.info(f"读取拍照点PR寄存器[{CamPose_ID}]")
+        pr_register, ret = arm.register.read_PR(CamPose_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"读取拍照点PR寄存器[{CamPose_ID}]失败，错误代码：{error_msg}"}
+        if not hasattr(pr_register, 'poseRegisterData') or \
+           not hasattr(pr_register.poseRegisterData, 'cartData') or \
+           not hasattr(pr_register.poseRegisterData.cartData, 'position'):
+            return {"success": False, "error": f"PR寄存器[{CamPose_ID}]数据格式不正确，必须包含位姿数据"}
+        pr_position = pr_register.poseRegisterData.cartData.position
+        pr_data = [
+            pr_position.x,
+            pr_position.y,
+            pr_position.z,
+            pr_position.a,  # W (绕X轴) = a
+            pr_position.b,  # P (绕Y轴) = b
+            pr_position.c   # R (绕Z轴) = c
+        ]
+        ut1_uf1_pr2 = PrecisionPose(pr_data)
+
+        # 读取基准视觉模板数据（工件C1在视觉坐标系中的位姿）
+        logger.info(f"读取基准视觉模板PR寄存器[{RefVis_ID}]")
+        pr_register, ret = arm.register.read_PR(RefVis_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"读取基准视觉模板PR寄存器[{RefVis_ID}]失败，错误代码：{error_msg}"}
+        if not hasattr(pr_register, 'poseRegisterData') or \
+           not hasattr(pr_register.poseRegisterData, 'cartData') or \
+           not hasattr(pr_register.poseRegisterData.cartData, 'position'):
+            return {"success": False, "error": f"PR寄存器[{RefVis_ID}]数据格式不正确，必须包含位姿数据"}
+        pr_position = pr_register.poseRegisterData.cartData.position
+        pr_data = [
+            pr_position.x,
+            pr_position.y,
+            pr_position.z,
+            pr_position.a,  # W (绕X轴) = a
+            pr_position.b,  # P (绕Y轴) = b
+            pr_position.c   # R (绕Z轴) = c
+        ]
+        c1_uf1 = PrecisionPose(pr_data)
+
+        # 读取实际视觉坐标数据（工件C2在视觉坐标系中的位姿）
+        logger.info(f"读取实际视觉坐标PR寄存器[{ActVis_ID}]")
+        pr_register, ret = arm.register.read_PR(ActVis_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"读取实际视觉坐标PR寄存器[{ActVis_ID}]失败，错误代码：{error_msg}"}
+        if not hasattr(pr_register, 'poseRegisterData') or \
+           not hasattr(pr_register.poseRegisterData, 'cartData') or \
+           not hasattr(pr_register.poseRegisterData.cartData, 'position'):
+            return {"success": False, "error": f"PR寄存器[{ActVis_ID}]数据格式不正确，必须包含位姿数据"}
+        pr_position = pr_register.poseRegisterData.cartData.position
+        pr_data = [
+            pr_position.x,
+            pr_position.y,
+            pr_position.z,
+            pr_position.a,  # W (绕X轴) = a
+            pr_position.b,  # P (绕Y轴) = b
+            pr_position.c   # R (绕Z轴) = c
+        ]
+        c2_uf1 = PrecisionPose(pr_data)
+
+        # 构建变换矩阵
+        T_UT0_UT1 = PrecisionTransform.from_pose_zyx(ut1_ut0)
+        T_UF1_UT1_PR2 = PrecisionTransform.from_pose_zyx(ut1_uf1_pr2)
+        T_UF1_C1 = PrecisionTransform.from_pose_zyx(c1_uf1)
+        T_UF1_C2 = PrecisionTransform.from_pose_zyx(c2_uf1)
+
+        # 计算工件在工具坐标系中的位姿
+        T_UT1_C1 = T_UF1_UT1_PR2.inverse() * T_UF1_C1
+        T_UT1_C2 = T_UF1_UT1_PR2.inverse() * T_UF1_C2
+
+        poseC1_in_UT1 = T_UT1_C1.get_pose_zyx()
+        poseC2_in_UT1 = T_UT1_C2.get_pose_zyx()
+
+        # 计算新的工具坐标系TF2相对于TF0的位姿
+        T_UT0_C2 = T_UT0_UT1 * T_UT1_C2
+        T_UT0_UT2 = T_UT0_C2 * T_UT1_C1.inverse()
+        poseUT2_relative_to_UT0 = T_UT0_UT2.get_pose_zyx()
+
+        # 验证计算（可选）
+        T_UF1_UT0 = T_UF1_UT1_PR2 * T_UT0_UT1.inverse()
+        T_UF1_UT2 = T_UF1_UT0 * T_UT0_UT2
+        T_UT2_C2_actual = T_UF1_UT2.inverse() * T_UF1_C2
+        poseC2_in_UT2_actual = T_UT2_C2_actual.get_pose_zyx()
+
+        errorX = abs(poseC1_in_UT1.X - poseC2_in_UT2_actual.X)
+        errorY = abs(poseC1_in_UT1.Y - poseC2_in_UT2_actual.Y)
+        errorR = abs(poseC1_in_UT1.R - poseC2_in_UT2_actual.R)
+        logger.info(f"误差分析: ΔX={errorX:.12e}, ΔY={errorY:.12e}, ΔR={errorR:.12e}")
+
+        # 构建结果位姿列表
+        ut2_pose_list = [
+            poseUT2_relative_to_UT0.X,
+            poseUT2_relative_to_UT0.Y,
+            poseUT2_relative_to_UT0.Z,
+            poseUT2_relative_to_UT0.W,
+            poseUT2_relative_to_UT0.P,
+            poseUT2_relative_to_UT0.R
+        ]
+
+        # 写入结果工具坐标系（SDK 2.0.0.0使用TF子类）
+        logger.info(f"写入计算结果到工具坐标系[{ResultTF_ID}]")
+        coordinate, ret = arm.coordinate_system.TF.get(ResultTF_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"获取工具坐标系[{ResultTF_ID}]失败，错误代码：{error_msg}"}
+        
+        # SDK 2.0.0.0中，坐标系数据存储在data属性中，直接包含x/y/z/a/b/c
+        # W/P/R转换为a/b/c（W绕X轴=a, P绕Y轴=b, R绕Z轴=c）
+        coordinate.data.x = ut2_pose_list[0]
+        coordinate.data.y = ut2_pose_list[1]
+        coordinate.data.z = ut2_pose_list[2]
+        coordinate.data.a = ut2_pose_list[3]  # W (绕X轴) -> a
+        coordinate.data.b = ut2_pose_list[4]  # P (绕Y轴) -> b
+        coordinate.data.c = ut2_pose_list[5]  # R (绕Z轴) -> c
+        
+        ret = arm.coordinate_system.TF.update(coordinate)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"更新工具坐标系[{ResultTF_ID}]失败，错误代码：{error_msg}"}
+
+        return {
+            "success": True,
+            "message": f"工具坐标系补正完成，结果已写入TF[{ResultTF_ID}]：X={ut2_pose_list[0]:.6f}, Y={ut2_pose_list[1]:.6f}, Z={ut2_pose_list[2]:.6f}, A={ut2_pose_list[3]:.6f}, B={ut2_pose_list[4]:.6f}, C={ut2_pose_list[5]:.6f}"
+        }
+
+    except Exception as ex:
+        logger.error(f"TFShift执行失败: {ex}", exc_info=True)
         return {"success": False, "error": f"执行失败：{str(ex)}"}
