@@ -1,0 +1,217 @@
+{
+  "name": "CM",
+  "type": "easyService",
+  "scriptLang": "python",
+  "description": "用户自定义指令插件",
+  "version": "1.2.0",
+  "author": "Agilebot",
+  "copyright": "Copyright © 2026 Agilebot Robotics Co., Ltd.",
+  "license": "Proprietary",
+  "functions": {
+    "SetTF": {
+      "description": "工具坐标系",
+      "parameters": {
+        "ID": {
+          "type": "int",
+          "description": "ID号（1-30，0是基础坐标系不可修改）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "Pos": {
+          "type": "select",
+          "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "Value": {
+          "type": "float",
+          "description": "参数值（数值类型）",
+          "valueType": "number"
+        }
+      }
+    },
+    "SetUF": {
+      "description": "用户坐标系",
+      "parameters": {
+        "ID": {
+          "type": "int",
+          "description": "ID号（1-30，0是基础坐标系不可修改）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "Pos": {
+          "type": "select",
+          "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "Value": {
+          "type": "float",
+          "description": "参数值（数值类型）",
+          "valueType": "number"
+        }
+      }
+    },
+    "SetTF_R": {
+      "description": "工具坐标系（从R寄存器读取值）",
+      "parameters": {
+        "ID": {
+          "type": "int",
+          "description": "ID号（1-30，0是基础坐标系不可修改）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "Pos": {
+          "type": "select",
+          "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号",
+          "valueType": "number"
+        }
+      }
+    },
+    "SetUF_R": {
+      "description": "用户坐标系（从R寄存器读取值）",
+      "parameters": {
+        "ID": {
+          "type": "int",
+          "description": "ID号（1-30，0是基础坐标系不可修改）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "Pos": {
+          "type": "select",
+          "description": "位置参数编号（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）",
+          "options": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号",
+          "valueType": "number"
+        }
+      }
+    },
+    "SetTF_PR": {
+      "description": "工具坐标系（从PR寄存器读取完整位姿）",
+      "parameters": {
+        "ID": {
+          "type": "int",
+          "description": "ID号（1-30，0是基础坐标系不可修改）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "PR_ID": {
+          "type": "int",
+          "description": "PR寄存器编号",
+          "valueType": "number"
+        }
+      }
+    },
+    "SetUF_PR": {
+      "description": "用户坐标系（从PR寄存器读取完整位姿）",
+      "parameters": {
+        "ID": {
+          "type": "int",
+          "description": "ID号（1-30，0是基础坐标系不可修改）",
+          "min": 1,
+          "max": 30,
+          "valueType": "number"
+        },
+        "PR_ID": {
+          "type": "int",
+          "description": "PR寄存器编号",
+          "valueType": "number"
+        }
+      }
+    },
+    "Incr": {
+      "description": "R寄存器自增",
+      "parameters": {
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号",
+          "valueType": "number"
+        },
+        "Step": {
+          "type": "float",
+          "description": "自增步长，默认为1.0",
+          "valueType": "number"
+        }
+      }
+    },
+    "Decr": {
+      "description": "R寄存器自减",
+      "parameters": {
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号",
+          "valueType": "number"
+        },
+        "Step": {
+          "type": "float",
+          "description": "自减步长，默认为1.0",
+          "valueType": "number"
+        }
+      }
+    },
+    "Strp": {
+      "description": "拆解字符串数据到PR寄存器（视觉数据格式）",
+      "parameters": {
+        "SR_ID": {
+          "type": "int",
+          "description": "字符串寄存器编号，包含视觉数据。格式：状态位,X,Y,C",
+          "valueType": "number"
+        },
+        "R_ID_Status": {
+          "type": "int",
+          "description": "R寄存器编号，用于输出物料检测状态（1=有物料，0=无物料）",
+          "valueType": "number"
+        },
+        "PR_ID": {
+          "type": "int",
+          "description": "PR寄存器起始编号，用于保存拆解后的数据。每个PR寄存器存储6个分量（X,Y,Z,A,B,C），其中Z、A、B保留原值不变",
+          "valueType": "number"
+        },
+        "R_ID_Error": {
+          "type": "int",
+          "description": "R寄存器编号，用于输出错误状态码（0=正确，1=错误）",
+          "valueType": "number"
+        }
+      }
+    }
+  }
+}

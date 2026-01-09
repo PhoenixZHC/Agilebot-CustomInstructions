@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<prog version="3.0">
+  <head/>
+  <prog_body>
+    <function name="main">
+      <body>
+        <nop/>
+        <instruction type="wait"><argument name="timeout" type="num" unit="sec">300</argument></instruction>
+        <end name="prog"/>
+      </body>
+    </function>
+  </prog_body>
+</prog>

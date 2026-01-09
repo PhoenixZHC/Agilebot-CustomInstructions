@@ -10,11 +10,32 @@
 
 ---
 
-## 兼容SDK版本
+## 版本说明
 
-**本插件使用 PYTHON_v1.7.1.3 开发**
+本插件提供两个版本，分别对应不同的SDK版本：
 
-兼容 SDK 2.0.0.0（已更新 is_connect → is_connected）
+### SDK v1.7.1.3 版本
+- **目录：** `CoordinateModifier（SDKV1.7.1.3）/`
+- **主文件：** `CM_oldsdk.py`
+- **兼容SDK：** Python SDK v1.7.1.3
+- **兼容机器人软件版本：**
+  - Copper v7.6.X.X
+  - Bronze v7.6.X.X
+
+### SDK v2.0.0.0 版本
+- **目录：** `CoordinateModifier（SDKV2.0.0.0）/`
+- **主文件：** `CM.py`
+- **兼容SDK：** Python SDK v2.0.0.0
+- **兼容机器人软件版本：**
+  - Copper v7.7.X.X
+  - Bronze v7.7.X.X
+
+### 版本选择建议
+
+- **使用 SDK v1.7.1.3 版本：** 如果您的机器人软件版本为 v7.6.X.X
+- **使用 SDK v2.0.0.0 版本：** 如果您的机器人软件版本为 v7.7.X.X 或更高
+
+**注意：** 请根据您的机器人软件版本选择对应的插件版本，确保SDK版本与机器人软件版本兼容。
 
 ---
 
@@ -239,6 +260,20 @@ CALL_SERVICE CM, Strp, SR_ID=1, R_ID_Status=1, PR_ID=1, R_ID_Error=2
 插件开发完毕后，需要使用捷勃特插件打包工具进行打包。详细的打包与安装说明请参考：
 
 [📦 打包与安装文档](https://dev.sh-agilebot.com/docs/extension/zh/02-development/04-package.html)
+
+---
+
+---
+
+## 版本历史
+
+### V1.2 (2026年1月9日)
+- 新增 SDK v2.0.0.0 版本支持
+- 更新坐标系接口：使用 `coordinate_system.TF/UF` 子类
+- 更新坐标系数据结构：使用 `coordinate.data.x/y/z/a/b/c`
+- 更新连接状态检查：`is_connect()` → `is_connected()`
+- 更新错误处理：使用 `ret.errmsg` 获取错误信息
+- 更新 Extension 使用方式：支持独立实例化获取IP地址
 
 ---
 
