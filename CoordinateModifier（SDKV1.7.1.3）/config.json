@@ -246,6 +246,21 @@
           "valueType": "number"
         }
       }
+    },
+    "DecToHex": {
+      "description": "从十进制转换为十六进制",
+      "parameters": {
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号，包含需要转换的十进制数（支持整数和浮点数）",
+          "valueType": "number"
+        },
+        "SR_ID": {
+          "type": "int",
+          "description": "SR寄存器编号，用于保存转换后的十六进制字符串（固定8位大写，不足8位前面补零）",
+          "valueType": "number"
+        }
+      }
     }
   }
 }

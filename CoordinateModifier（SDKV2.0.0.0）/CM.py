@@ -16,6 +16,7 @@
 8. Decr - R寄存器自减
 9. Strp - 拆解字符串数据到PR寄存器
 10. TFShift - 工具坐标系补正（基于视觉反馈）
+11. DecToHex - 从十进制转换为十六进制
 
 """
 
@@ -44,7 +45,8 @@ __all__ = [
     'Incr',
     'Decr',
     'Strp',
-    'TFShift'
+    'TFShift',
+    'DecToHex'
 ]
 
 
@@ -192,7 +194,7 @@ class PrecisionTransform:
 def __get_robot_ip():
     """
     获取机器人IP地址
-    
+
     SDK 2.0.0.0版本中，Extension类可以独立使用来获取机器人IP地址。
 
     返回：
@@ -467,7 +469,7 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
         data_attr = param_map.get(Pos)
         if data_attr is None:
             return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-        
+
         setattr(coordinate.data, data_attr, Value)
 
         # 更新坐标系
@@ -550,7 +552,7 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
         data_attr = param_map.get(Pos)
         if data_attr is None:
             return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-        
+
         setattr(coordinate.data, data_attr, Value)
 
         # 更新坐标系
@@ -639,7 +641,7 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
         data_attr = param_map.get(Pos)
         if data_attr is None:
             return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-        
+
         setattr(coordinate.data, data_attr, Value)
 
         # 更新坐标系
@@ -728,7 +730,7 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
         data_attr = param_map.get(Pos)
         if data_attr is None:
             return {"success": False, "error": f"无效的位置参数：{Pos}，必须是1-6之一"}
-        
+
         setattr(coordinate.data, data_attr, Value)
 
         # 更新坐标系
@@ -1560,7 +1562,7 @@ def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, Ref
         if ret != StatusCodeEnum.OK:
             error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
             return {"success": False, "error": f"获取工具坐标系[{ResultTF_ID}]失败，错误代码：{error_msg}"}
-        
+
         # SDK 2.0.0.0中，坐标系数据存储在data属性中，直接包含x/y/z/a/b/c
         # W/P/R转换为a/b/c（W绕X轴=a, P绕Y轴=b, R绕Z轴=c）
         coordinate.data.x = ut2_pose_list[0]
@@ -1569,7 +1571,7 @@ def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, Ref
         coordinate.data.a = ut2_pose_list[3]  # W (绕X轴) -> a
         coordinate.data.b = ut2_pose_list[4]  # P (绕Y轴) -> b
         coordinate.data.c = ut2_pose_list[5]  # R (绕Z轴) -> c
-        
+
         ret = arm.coordinate_system.TF.update(coordinate)
         if ret != StatusCodeEnum.OK:
             error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
@@ -1582,4 +1584,114 @@ def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, Ref
 
     except Exception as ex:
         logger.error(f"TFShift执行失败: {ex}", exc_info=True)
+        return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
+def DecToHex(R_ID: int, SR_ID: int) -> dict:
+    """
+    从十进制转换为十六进制
+
+    参数：
+    - R_ID (int): R寄存器编号，包含需要转换的十进制数（支持整数和浮点数）
+    - SR_ID (int): SR寄存器编号，用于保存转换后的十六进制字符串
+
+    转换规则：
+    1. 浮点数处理：截断（直接丢弃小数部分，不四舍五入）
+    2. 数值范围：32位整数（-2147483648 到 2147483647）
+    3. 负数处理：使用32位补码形式表示
+    4. 输出格式：固定8位十六进制字符串（大写，不足8位前面补零）
+
+    示例：
+    - R[1] = 255 → SR[1] = "000000FF"
+    - R[1] = 255.99 → SR[1] = "000000FF"（截断）
+    - R[1] = -1 → SR[1] = "FFFFFFFF"
+    - R[1] = -255 → SR[1] = "FFFFFF01"
+    - R[1] = 0 → SR[1] = "00000000"
+
+    返回：
+    - dict: {"success": bool, "message": str, "error": str}
+    """
+    # 参数验证
+    # 验证R_ID为数值类型并转换为整数
+    try:
+        R_ID = int(R_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "R寄存器编号必须是数值类型"}
+
+    # 验证SR_ID为数值类型并转换为整数
+    try:
+        SR_ID = int(SR_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "SR寄存器编号必须是数值类型"}
+
+    # 获取Arm连接（长连接机制）
+    arm, error = __get_arm_connection()
+    if arm is None:
+        return {"success": False, "error": error}
+
+    try:
+        # ========== 步骤1：读取R寄存器值 ==========
+        logger.info(f"步骤1：读取R寄存器[{R_ID}]")
+        r_value, ret = arm.register.read_R(R_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            logger.error(f"读取R寄存器[{R_ID}]失败，错误代码：{error_msg}")
+            return {"success": False, "error": f"读取R寄存器[{R_ID}]失败，错误代码：{error_msg}"}
+        logger.info(f"R寄存器[{R_ID}]原始值：{r_value}（类型：{type(r_value).__name__}）")
+
+        # ========== 步骤2：转换为浮点数（统一处理） ==========
+        try:
+            float_value = float(r_value)
+        except (ValueError, TypeError):
+            logger.error(f"R寄存器[{R_ID}]的值'{r_value}'无法转换为数值")
+            return {"success": False, "error": f"R寄存器[{R_ID}]的值'{r_value}'无法转换为数值"}
+
+        # ========== 步骤3：截断为整数（丢弃小数部分） ==========
+        logger.info(f"步骤3：截断浮点数{float_value}为整数")
+        int_value = int(float_value)  # 直接截断，不四舍五入
+        logger.info(f"截断后的整数值：{int_value}")
+
+        # ========== 步骤4：验证32位整数范围 ==========
+        logger.info(f"步骤4：验证32位整数范围")
+        INT32_MIN = -2147483648
+        INT32_MAX = 2147483647
+        if int_value < INT32_MIN or int_value > INT32_MAX:
+            logger.error(f"数值{int_value}超出32位整数范围（{INT32_MIN} 到 {INT32_MAX}）")
+            return {
+                "success": False,
+                "error": f"数值{int_value}超出32位整数范围（{INT32_MIN} 到 {INT32_MAX}）"
+            }
+        logger.info(f"数值范围验证通过：{int_value}在32位范围内")
+
+        # ========== 步骤5：转换为32位补码（处理负数） ==========
+        logger.info(f"步骤5：转换为32位补码")
+        # 使用位运算确保是32位无符号整数（负数自动转换为补码）
+        uint32_value = int_value & 0xFFFFFFFF
+        logger.info(f"32位补码值（无符号整数）：{uint32_value} (0x{uint32_value:08X})")
+
+        # ========== 步骤6：格式化为8位大写十六进制字符串 ==========
+        logger.info(f"步骤6：格式化为8位大写十六进制字符串")
+        # format(value, '08X') 表示：8位，大写，不足8位前面补零
+        hex_string = format(uint32_value, '08X')
+        logger.info(f"十六进制字符串：'{hex_string}'")
+
+        # ========== 步骤7：写入SR寄存器 ==========
+        logger.info(f"步骤7：写入SR寄存器[{SR_ID}]")
+        ret = arm.register.write_SR(SR_ID, hex_string)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            logger.error(f"写入SR寄存器[{SR_ID}]失败，错误代码：{error_msg}")
+            return {"success": False, "error": f"写入SR寄存器[{SR_ID}]失败，错误代码：{error_msg}"}
+        logger.info(f"成功写入SR寄存器[{SR_ID}]：'{hex_string}'")
+
+        # ========== 步骤8：返回成功信息 ==========
+        # 构建消息：显示原始值、截断后的整数值和十六进制结果
+        original_display = f"{r_value}" if isinstance(r_value, int) or r_value == int_value else f"{r_value}（截断为{int_value}）"
+        return {
+            "success": True,
+            "message": f"R寄存器[{R_ID}]的值{original_display}已转换为十六进制'{hex_string}'并写入SR寄存器[{SR_ID}]"
+        }
+
+    except Exception as ex:
+        logger.error(f"DecToHex执行失败: {ex}", exc_info=True)
         return {"success": False, "error": f"执行失败：{str(ex)}"}
