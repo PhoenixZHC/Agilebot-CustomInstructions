@@ -3,7 +3,7 @@
   "type": "easyService",
   "scriptLang": "python",
   "description": "用户自定义指令插件",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Agilebot",
   "copyright": "Copyright © 2026 Agilebot Robotics Co., Ltd.",
   "license": "Proprietary",
@@ -258,6 +258,50 @@
         "SR_ID": {
           "type": "int",
           "description": "SR寄存器编号，用于保存转换后的十六进制字符串（固定8位大写，不足8位前面补零）",
+          "valueType": "number"
+        }
+      }
+    },
+    "TurnCountToR": {
+      "description": "将PR位姿回转数写入R寄存器（单轴）",
+      "parameters": {
+        "PR_ID": {
+          "type": "int",
+          "description": "PR寄存器编号，读取其姿态中的turnCircle",
+          "valueType": "number"
+        },
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号（单个R）",
+          "valueType": "number"
+        },
+        "Joint_ID": {
+          "type": "int",
+          "description": "需要写入的关节轴（1=J1, 2=J2, ..., 6=J6）",
+          "min": 1,
+          "max": 6,
+          "valueType": "number"
+        }
+      }
+    },
+    "RToTurnCount": {
+      "description": "将R寄存器回写到PR位姿回转数（单轴）",
+      "parameters": {
+        "PR_ID": {
+          "type": "int",
+          "description": "PR寄存器编号，写入其姿态中的turnCircle",
+          "valueType": "number"
+        },
+        "R_ID": {
+          "type": "int",
+          "description": "R寄存器编号（单个R）",
+          "valueType": "number"
+        },
+        "Joint_ID": {
+          "type": "int",
+          "description": "需要回写的关节轴（1=J1, 2=J2, ..., 6=J6）",
+          "min": 1,
+          "max": 6,
           "valueType": "number"
         }
       }

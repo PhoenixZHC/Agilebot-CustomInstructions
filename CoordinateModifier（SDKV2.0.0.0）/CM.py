@@ -1,9 +1,16 @@
 #!python
 # -*- coding: utf-8 -*-
 """
-坐标系修改插件
+**CM (Custom Module)** 用户自定义指令插件
+版本 V1.4.0 | 更新日期：2026年3月25日
 功能说明：
-本插件实现修改TF（工具坐标系）和UF（用户坐标系）的功能，以及R寄存器的自增自减功能。
+本插件实现以下功能：坐标系（TF/UF）参数设置与从R/PR读取设置；
+R寄存器自增/自减；
+字符串数据拆解（Strp）写入PR；
+工具坐标系视觉补正（TFShift）；
+十进制到十六进制转换（DecToHex）；
+以及回转标记在 `turnCircle` 与单个R之间的同步（TurnCountToR / RToTurnCount，单轴替换，`Joint_ID` 指定 J1~J6）。
+
 
 提供指令：
 1. SetTF - 工具坐标系（直接数值）
@@ -17,15 +24,99 @@
 9. Strp - 拆解字符串数据到PR寄存器
 10. TFShift - 工具坐标系补正（基于视觉反馈）
 11. DecToHex - 从十进制转换为十六进制
+12. TurnCountToR - 将PR位姿回转数写入R寄存器（单轴）
+13. RToTurnCount - 将R寄存器回写到PR位姿回转数（单轴）
 
 """
 
-# 获取全局logger实例，只能在简单服务中使用
-logger = globals().get('logger')
-if logger is None:
-    # 本地调试时，使用自带日志库
-    import logging
-    logger = logging.getLogger(__name__)
+import logging
+
+# NOTE: stdout fallback logger logic is inlined into _LoggerAdapter.__init__
+# to avoid Cursor symbol suggestions for a helper function.
+
+
+class _LoggerAdapter:
+    """统一日志入口，兼容宿主logger并强制stdout兜底输出。"""
+
+    def __init__(self, host_logger):
+        self._host_logger = host_logger
+        py_logger = logging.getLogger(__name__)
+        if not py_logger.handlers:
+            _handler = logging.StreamHandler()
+            _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+            py_logger.addHandler(_handler)
+        py_logger.setLevel(logging.INFO)
+        self._py_logger = py_logger
+        if hasattr(self._host_logger, "setLevel"):
+            try:
+                self._host_logger.setLevel(logging.INFO)
+            except Exception:
+                pass
+
+    def _render(self, msg, args):
+        rendered = str(msg)
+        if args:
+            try:
+                rendered = rendered % args
+            except Exception:
+                pass
+        return rendered
+
+    def _call_host(self, level_name, msg, args, kwargs):
+        if self._host_logger is None:
+            return
+        method_names = {
+            "INFO": ("info", "Info"),
+            "WARN": ("warning", "warn", "Warning", "Warn"),
+            "ERROR": ("error", "Error"),
+            "DEBUG": ("debug", "Debug"),
+        }.get(level_name, ())
+        for method_name in method_names:
+            func = getattr(self._host_logger, method_name, None)
+            if callable(func):
+                try:
+                    func(msg, *args, **kwargs)
+                    return
+                except Exception:
+                    continue
+
+    def _call_py_logger(self, level_name, rendered_msg, kwargs):
+        try:
+            if level_name == "INFO":
+                self._py_logger.info(rendered_msg, **kwargs)
+            elif level_name == "WARN":
+                self._py_logger.warning(rendered_msg, **kwargs)
+            elif level_name == "ERROR":
+                self._py_logger.error(rendered_msg, **kwargs)
+            else:
+                self._py_logger.debug(rendered_msg, **kwargs)
+        except Exception:
+            pass
+
+    def _emit(self, level_name, msg, *args, **kwargs):
+        rendered_msg = self._render(msg, args)
+        self._call_host(level_name, msg, args, kwargs)
+        self._call_py_logger(level_name, rendered_msg, kwargs)
+        try:
+            print(f"[{level_name}] {rendered_msg}", flush=True)
+        except Exception:
+            pass
+
+    def info(self, msg, *args, **kwargs):
+        self._emit("INFO", msg, *args, **kwargs)
+
+    def warning(self, msg, *args, **kwargs):
+        self._emit("WARN", msg, *args, **kwargs)
+
+    def error(self, msg, *args, **kwargs):
+        self._emit("ERROR", msg, *args, **kwargs)
+
+    def debug(self, msg, *args, **kwargs):
+        self._emit("DEBUG", msg, *args, **kwargs)
+
+
+# 获取宿主环境logger（可能不存在或接口不完整），统一交给适配器处理
+logger = _LoggerAdapter(globals().get("logger"))
 
 from Agilebot import Arm, Extension, StatusCodeEnum
 import copy
@@ -46,7 +137,9 @@ __all__ = [
     'Decr',
     'Strp',
     'TFShift',
-    'DecToHex'
+    'DecToHex',
+    'TurnCountToR',
+    'RToTurnCount',
 ]
 
 
@@ -1695,3 +1788,366 @@ def DecToHex(R_ID: int, SR_ID: int) -> dict:
     except Exception as ex:
         logger.error(f"DecToHex执行失败: {ex}", exc_info=True)
         return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
+def TurnCountToR(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
+    """
+    读取指定PR寄存器中的回转数（turnCircle）指定轴，并写入单个R寄存器
+
+    参数：
+    - PR_ID (int): PR寄存器编号（如 PR1 则传 1）
+    - R_ID (int): R寄存器编号（单个R）
+    - Joint_ID (int): 写入哪个关节轴（1=J1, 2=J2, ..., 6=J6），默认1
+
+    返回：
+    - dict: {"success": bool, "message": str, "error": str}
+    """
+    logger.info(f"TurnCountToR开始执行: PR_ID={PR_ID}, R_ID={R_ID}, Joint_ID={Joint_ID}")
+    # 参数验证
+    try:
+        PR_ID = int(PR_ID)
+    except (ValueError, TypeError):
+        error_msg = "PR寄存器编号必须是数值类型"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+    try:
+        R_ID = int(R_ID)
+    except (ValueError, TypeError):
+        error_msg = "R寄存器编号必须是数值类型"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+    try:
+        Joint_ID = int(Joint_ID)
+    except (ValueError, TypeError):
+        error_msg = "Joint_ID必须是数值类型（1=J1, ..., 6=J6）"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+    if Joint_ID < 1:
+        error_msg = f"Joint_ID必须>=1，当前值：{Joint_ID}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+    # 获取Arm连接（长连接机制）
+    arm, error = __get_arm_connection()
+    if arm is None:
+        logger.error(f"获取Arm连接失败: {error}")
+        return {"success": False, "error": error}
+
+    try:
+        logger.info(f"步骤1：读取PR寄存器[{PR_ID}]")
+        pr_register, ret = arm.register.read_PR(PR_ID)
+        logger.info(f"read_PR返回状态: {ret}")
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            logger.error(f"读取PR寄存器[{PR_ID}]失败，错误代码：{error_msg}")
+            return {"success": False, "error": f"读取PR寄存器[{PR_ID}]失败，错误代码：{error_msg}"}
+
+        # 兼容不同SDK结构：posture 可能在 poseRegisterData.posture 或 poseRegisterData.cartData.posture
+        posture_obj = None
+        pr_data = None
+        if hasattr(pr_register, 'poseRegisterData'):
+            pr_data = pr_register.poseRegisterData
+            if hasattr(pr_data, 'posture') and pr_data.posture is not None:
+                posture_obj = pr_data.posture
+            elif hasattr(pr_data, 'cartData') and hasattr(pr_data.cartData, 'posture') and pr_data.cartData.posture is not None:
+                posture_obj = pr_data.cartData.posture
+
+        if posture_obj is None:
+            logger.error(f"PR[{PR_ID}]未找到posture对象，pr_register类型={type(pr_register).__name__}")
+            return {"success": False, "error": f"PR寄存器[{PR_ID}]中未找到姿态(posture)数据"}
+
+        # 兼容字段命名：turnCircle / turn_circle
+        turn_circle_values = None
+        if hasattr(posture_obj, 'turnCircle'):
+            turn_circle_values = posture_obj.turnCircle
+        elif hasattr(posture_obj, 'turn_circle'):
+            turn_circle_values = posture_obj.turn_circle
+
+        # SDK字段兜底探测：扫描 posture/pr_data/cartData/pr_register 中带 turn 的列表字段
+        if turn_circle_values is None:
+            probe_sources = [("posture", posture_obj)]
+            if pr_data is not None:
+                probe_sources.append(("poseRegisterData", pr_data))
+                if hasattr(pr_data, 'cartData'):
+                    probe_sources.append(("cartData", pr_data.cartData))
+            probe_sources.append(("pr_register", pr_register))
+
+            for src_name, src_obj in probe_sources:
+                try:
+                    attr_names = [n for n in dir(src_obj) if not n.startswith('_')]
+                except Exception:
+                    continue
+                for attr_name in attr_names:
+                    low_name = attr_name.lower()
+                    if "turn" not in low_name:
+                        continue
+                    try:
+                        candidate = getattr(src_obj, attr_name)
+                    except Exception:
+                        continue
+                    if isinstance(candidate, (list, tuple)) and len(candidate) > 0:
+                        turn_circle_values = candidate
+                        logger.info(f"自动探测到回转数字段: {src_name}.{attr_name}")
+                        break
+                if turn_circle_values is not None:
+                    break
+
+        if turn_circle_values is None:
+            try:
+                posture_fields = [n for n in dir(posture_obj) if not n.startswith('_')]
+            except Exception:
+                posture_fields = []
+            logger.error(f"PR[{PR_ID}]的posture缺少turn相关字段，posture类型={type(posture_obj).__name__}，可用字段={posture_fields}")
+            return {"success": False, "error": f"PR寄存器[{PR_ID}]中未找到回转数(turnCircle/turn_circle)数据"}
+
+        turn_circle = list(turn_circle_values)
+        if len(turn_circle) == 0:
+            logger.error(f"PR寄存器[{PR_ID}]的turnCircle为空")
+            return {"success": False, "error": f"PR寄存器[{PR_ID}]的turnCircle为空，无法写入R寄存器"}
+
+        joint_index = Joint_ID - 1
+        if joint_index >= len(turn_circle):
+            return {
+                "success": False,
+                "error": f"Joint_ID={Joint_ID}超出turnCircle长度（len={len(turn_circle)}）"
+            }
+
+        # 只写一个轴：J{JointStart} -> R[{Start_R_ID}]
+        raw_value = turn_circle[joint_index]
+        try:
+            float_value = float(raw_value)
+        except (ValueError, TypeError):
+            logger.error(f"turnCircle[J{Joint_ID}]不是有效数值: {raw_value}")
+            return {
+                "success": False,
+                "error": f"PR寄存器[{PR_ID}]的turnCircle[J{Joint_ID}]值'{raw_value}'不是有效数值，仅允许-1/0/1"
+            }
+        if not float_value.is_integer():
+            logger.error(f"turnCircle[J{Joint_ID}]不是整数: {raw_value}")
+            return {
+                "success": False,
+                "error": f"PR寄存器[{PR_ID}]的turnCircle[J{Joint_ID}]值为{raw_value}，必须是整数且仅允许-1/0/1"
+            }
+        value = int(float_value)
+        if value not in (-1, 0, 1):
+            logger.error(f"turnCircle[J{Joint_ID}]超出允许范围: {value}")
+            return {
+                "success": False,
+                "error": f"PR寄存器[{PR_ID}]的turnCircle[J{Joint_ID}]值为{value}，仅允许-1/0/1"
+            }
+
+        logger.info(f"步骤2：写入回转数到R寄存器：J{Joint_ID}({raw_value}) -> R[{R_ID}]={value}")
+        ret = arm.register.write_R(R_ID, value)
+        logger.info(f"write_R返回状态: R[{R_ID}] -> {ret}")
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            logger.error(f"写入R寄存器[{R_ID}]失败，错误代码：{error_msg}")
+            return {"success": False, "error": f"写入R寄存器[{R_ID}]失败，错误代码：{error_msg}"}
+
+        logger.info(f"TurnCountToR执行成功: PR[{PR_ID}] J{Joint_ID} -> R[{R_ID}]={value}")
+        return {
+            "success": True,
+            "message": f"已将PR[{PR_ID}]的J{Joint_ID}回转数（{raw_value}）写入R[{R_ID}]={value}"
+        }
+
+    except Exception as ex:
+        logger.error(f"TurnCountToR执行失败: {ex}", exc_info=True)
+        return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
+
+
+def RToTurnCount(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
+    """
+    将连续R寄存器中的值回写到PR寄存器的回转数（turnCircle）
+
+    参数：
+    - PR_ID (int): PR寄存器编号，写入其姿态中的turnCircle
+    - R_ID (int): R寄存器编号（单个R）
+    - Joint_ID (int): 需要回写的关节轴（1=J1, 2=J2, ..., 6=J6），默认1
+
+    说明：
+    - 不会清空整个 turnCircle
+    - 只替换目标关节范围对应的值，其它关节保持不变
+
+    返回：
+    - dict: {"success": bool, "message": str, "error": str}
+    """
+    logger.info(
+        f"RToTurnCount开始执行: PR_ID={PR_ID}, R_ID={R_ID}, Joint_ID={Joint_ID}"
+    )
+    # 参数验证
+    try:
+        PR_ID = int(PR_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "PR寄存器编号必须是数值类型"}
+
+    try:
+        R_ID = int(R_ID)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "R寄存器编号必须是数值类型"}
+
+    try:
+        Joint_ID = int(Joint_ID)
+    except (ValueError, TypeError):
+        error_msg = "Joint_ID必须是数值类型（1=J1, ..., 6=J6）"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+    if Joint_ID < 1:
+        error_msg = f"Joint_ID必须>=1，当前值：{Joint_ID}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+    # 获取Arm连接（长连接机制）
+    arm, error = __get_arm_connection()
+    if arm is None:
+        return {"success": False, "error": error}
+
+    try:
+        # 读取PR寄存器
+        logger.info(f"步骤1：读取PR寄存器[{PR_ID}]")
+        pr_register, ret = arm.register.read_PR(PR_ID)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"读取PR寄存器[{PR_ID}]失败，错误代码：{error_msg}"}
+
+        # 兼容不同SDK结构：posture 可能在 poseRegisterData.posture 或 poseRegisterData.cartData.posture
+        posture_obj = None
+        pr_data = None
+        if hasattr(pr_register, 'poseRegisterData'):
+            pr_data = pr_register.poseRegisterData
+            if hasattr(pr_data, 'posture') and pr_data.posture is not None:
+                posture_obj = pr_data.posture
+            elif hasattr(pr_data, 'cartData') and hasattr(pr_data.cartData, 'posture') and pr_data.cartData.posture is not None:
+                posture_obj = pr_data.cartData.posture
+
+        if posture_obj is None:
+            logger.error(f"PR[{PR_ID}]中未找到可写入posture，pr_register类型={type(pr_register).__name__}")
+            return {"success": False, "error": f"PR寄存器[{PR_ID}]中未找到可写入的姿态(posture)结构"}
+
+        # 兼容字段命名：turnCircle / turn_circle / turn_cycle
+        turn_circle_attr = None
+        turn_circle_owner = posture_obj
+        if hasattr(posture_obj, 'turnCircle'):
+            turn_circle_attr = 'turnCircle'
+        elif hasattr(posture_obj, 'turn_circle'):
+            turn_circle_attr = 'turn_circle'
+        elif hasattr(posture_obj, 'turn_cycle'):
+            turn_circle_attr = 'turn_cycle'
+
+        # SDK字段兜底探测：扫描 posture/pr_data/cartData/pr_register 中带 turn 的序列字段
+        if turn_circle_attr is None:
+            probe_sources = [("posture", posture_obj)]
+            if pr_data is not None:
+                probe_sources.append(("poseRegisterData", pr_data))
+                if hasattr(pr_data, 'cartData'):
+                    probe_sources.append(("cartData", pr_data.cartData))
+            probe_sources.append(("pr_register", pr_register))
+
+            for src_name, src_obj in probe_sources:
+                try:
+                    attr_names = [n for n in dir(src_obj) if not n.startswith('_')]
+                except Exception:
+                    continue
+                for attr_name in attr_names:
+                    if "turn" not in attr_name.lower():
+                        continue
+                    try:
+                        candidate = getattr(src_obj, attr_name)
+                    except Exception:
+                        continue
+                    if hasattr(candidate, "append") and hasattr(candidate, "pop"):
+                        turn_circle_attr = attr_name
+                        turn_circle_owner = src_obj
+                        logger.info(f"自动探测到可写回转数字段: {src_name}.{attr_name}")
+                        break
+                    if isinstance(candidate, (list, tuple)):
+                        turn_circle_attr = attr_name
+                        turn_circle_owner = src_obj
+                        logger.info(f"自动探测到回转数字段: {src_name}.{attr_name}")
+                        break
+                if turn_circle_attr is not None:
+                    break
+
+        if turn_circle_attr is None:
+            try:
+                posture_fields = [n for n in dir(posture_obj) if not n.startswith('_')]
+            except Exception:
+                posture_fields = []
+            logger.error(f"PR[{PR_ID}]未找到可写turn字段，posture类型={type(posture_obj).__name__}，可用字段={posture_fields}")
+            return {"success": False, "error": f"PR寄存器[{PR_ID}]中未找到可写入的回转数(turnCircle/turn_circle)结构"}
+
+        # 获取现有turnCircle，并按关节下标写入（不清空，不组装重建）
+        turn_circle_container = getattr(turn_circle_owner, turn_circle_attr)
+        existing_turn_circle = list(turn_circle_container)
+        if len(existing_turn_circle) == 0:
+            return {"success": False, "error": f"PR寄存器[{PR_ID}]的turnCircle为空，无法回写"}
+
+        joint_start_index = Joint_ID - 1
+        if joint_start_index < 0 or joint_start_index >= len(existing_turn_circle):
+            return {
+                "success": False,
+                "error": f"Joint_ID={Joint_ID}超出turnCircle长度（len={len(existing_turn_circle)}）"
+            }
+
+        # 只替换一个轴：turnCircle[joint_start_index]（即 J{Joint_ID}）
+        target_index = joint_start_index
+        old_value = existing_turn_circle[target_index]
+
+        logger.info(
+            f"步骤2：读取R[{R_ID}]并替换J{Joint_ID}回转数（turnCircle[{target_index}]）"
+        )
+        r_id = R_ID
+        r_value, ret = arm.register.read_R(r_id)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"读取R寄存器[{r_id}]失败，错误代码：{error_msg}"}
+
+        try:
+            float_value = float(r_value)
+        except (ValueError, TypeError):
+            return {
+                "success": False,
+                "error": f"R寄存器[{r_id}]的值'{r_value}'不是有效数值，仅允许-1/0/1"
+            }
+        if not float_value.is_integer():
+            return {
+                "success": False,
+                "error": f"R寄存器[{r_id}]的值为{r_value}，必须是整数且仅允许-1/0/1"
+            }
+        value = int(float_value)
+        if value not in (-1, 0, 1):
+            return {
+                "success": False,
+                "error": f"R寄存器[{r_id}]的值为{value}，仅允许-1/0/1"
+            }
+
+        logger.info(f"  替换：J{Joint_ID} 回转数 {old_value} -> {value}（来自R[{r_id}]）")
+        existing_turn_circle[target_index] = value
+
+        # 尽量原地写回（只替换一个index）
+        logger.info(f"步骤3：写回PR[{PR_ID}]的J{Joint_ID}回转数")
+        try:
+            turn_circle_container[target_index] = int(existing_turn_circle[target_index])
+        except Exception:
+            setattr(turn_circle_owner, turn_circle_attr, [int(v) for v in existing_turn_circle])
+
+        # 写回PR寄存器
+        ret = arm.register.write_PR(pr_register)
+        if ret != StatusCodeEnum.OK:
+            error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            return {"success": False, "error": f"写入PR寄存器[{PR_ID}]失败，错误代码：{error_msg}"}
+
+        logger.info(f"RToTurnCount执行成功: PR[{PR_ID}] J{Joint_ID} 已替换 {old_value} -> {value}")
+        return {
+            "success": True,
+            "message": f"已将R[{R_ID}]的值写入PR[{PR_ID}]的J{Joint_ID}回转数：{old_value} -> {value}"
+        }
+
+    except Exception as ex:
+        logger.error(f"RToTurnCount执行失败: {ex}", exc_info=True)
+        return {"success": False, "error": f"执行失败：{str(ex)}"}
+
+
