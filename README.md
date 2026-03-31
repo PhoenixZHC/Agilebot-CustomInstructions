@@ -4,9 +4,15 @@
 
 ---
 
+## Language / 语言
+
+- [English](README.en.md) | [中文简体](README.md)
+
+---
+
 ## 概述
 
-**CM（Custom Module）**是一个用户自定义指令插件，为捷勃特机器人提供一组实用的自定义指令。
+**CM（Custom Module）**是一个用户自定义指令插件，为捷勃特机器人提供了一系列实用的自定义指令。
 
 ---
 
@@ -36,6 +42,14 @@
 - **使用 SDK v2.0.0.0 版本：** 如果您的机器人软件版本为 v7.7.X.X 或更高
 
 **注意：** 请根据您的机器人软件版本选择对应的插件版本，确保SDK版本与机器人软件版本兼容。
+
+---
+
+## 打包说明
+
+插件开发完毕后，需要使用捷勃特插件打包工具进行打包。详细的打包与安装说明请参考：
+
+[📦 打包与安装文档](https://dev.sh-agilebot.com/docs/extension/zh/02-development/04-package.html)
 
 ---
 
@@ -387,16 +401,6 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 
 ---
 
-## 打包说明
-
-插件开发完毕后，需要使用捷勃特插件打包工具进行打包。详细的打包与安装说明请参考：
-
-[📦 打包与安装文档](https://dev.sh-agilebot.com/docs/extension/zh/02-development/04-package.html)
-
----
-
----
-
 ## 版本历史
 
 ### V1.4 (2026年3月25日)
@@ -428,4 +432,3 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 ---
 
 **CM 用户自定义指令插件 | 版本 V1.4 | 更新日期：2026年3月25日 | © 2026**
-
