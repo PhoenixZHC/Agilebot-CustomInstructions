@@ -1,6 +1,6 @@
 # CM Custom Instructions Plugin
 
-**Version V1.3 | Updated: January 12, 2026**
+**Version V1.4 | Updated: March 25, 2026**
 
 ---
 
@@ -55,7 +55,7 @@ After plugin development is complete, you need to use the Agilebot plugin packag
 
 ## Feature List
 
-The plugin provides the following 11 custom instructions:
+The plugin provides the following 13 custom instructions:
 
 1. **SetTF** - Set tool coordinate system parameters (direct values)
 2. **SetUF** - Set user coordinate system parameters (direct values)
@@ -68,6 +68,8 @@ The plugin provides the following 11 custom instructions:
 9. **Strp** - Parse string data to PR register
 10. **TFShift** - Tool coordinate system compensation (based on vision feedback)
 11. **DecToHex** - Convert from decimal to hexadecimal
+12. **TurnCountToR** - Write PR pose turn count to R register (single-axis)
+13. **RToTurnCount** - Write back R register value to PR pose turn count (single-axis)
 
 ---
 
@@ -326,6 +328,46 @@ CALL_SERVICE CM, DecToHex, R_ID=1, SR_ID=1
 
 ---
 
+### 12. TurnCountToR - Write PR Pose Turn Count to R Register (Single-Axis)
+
+Read `turnCircle` (turn count) from the specified `PR_ID` register, and write only one specified axis (`Joint_ID`) to `R[R_ID]`.
+
+**Parameters:**
+- `PR_ID` (int): PR register ID, reads `turnCircle` from its pose
+- `R_ID` (int): R register ID (single R)
+- `Joint_ID` (int): Joint axis to write (1=J1, 2=J2, ..., 6=J6)
+
+**Data Rules:**
+- Only `-1 / 0 / 1` can be written
+- Only replaces the turn flag of the specified axis; other axes are not involved
+
+**Example:**
+```
+CALL_SERVICE CM, TurnCountToR, PR_ID=10, R_ID=100, Joint_ID=3
+```
+
+---
+
+### 13. RToTurnCount - Write Back R Register Value to PR Pose Turn Count (Single-Axis)
+
+Read value from `R[R_ID]`, validate it, and write back only to the specified axis (`Joint_ID`) turn flag of `PR_ID`.
+
+**Parameters:**
+- `PR_ID` (int): PR register ID, writes to `turnCircle` in its pose
+- `R_ID` (int): R register ID (single R)
+- `Joint_ID` (int): Joint axis to write back (1=J1, 2=J2, ..., 6=J6)
+
+**Data Rules:**
+- R register value must be an integer, and only `-1 / 0 / 1` is allowed
+- Only replaces the specified axis; other axes remain unchanged
+
+**Example:**
+```
+CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
+```
+
+---
+
 ## Key Features
 
 ### Core Features
@@ -335,7 +377,7 @@ CALL_SERVICE CM, DecToHex, R_ID=1, SR_ID=1
 - **Data Validation:** All instructions include complete parameter validation and error handling
 - **Precision Control:** Coordinate system parameter values automatically retain three decimal places
 - **Automatic Separator Detection:** Strp instruction supports automatic detection of multiple separators (comma, semicolon, vertical bar, tab, space, etc.)
-- **Data Verification Mechanism:** Strp instruction immediately verifies data after writing to PR register
+- **Turn Count Synchronization:** Supports bidirectional synchronization between PR `turnCircle` and R registers (`TurnCountToR` / `RToTurnCount`, single-axis replacement)
 
 ---
 
@@ -355,10 +397,18 @@ CALL_SERVICE CM, DecToHex, R_ID=1, SR_ID=1
    - After writing to PR register, data will be immediately verified for correct writing
    - It is recommended to check R_ID_Status and R_ID_Error values before use to determine execution results
 7. **Error Handling:** All instructions return dictionary format, containing success, message/error fields, it is recommended to always check the success field
+8. **Turn Count Constraint:** `TurnCountToR` and `RToTurnCount` only support `-1/0/1` for axis turn flag synchronization
 
 ---
 
 ## Version History
+
+### V1.4 (March 25, 2026)
+- Added **TurnCountToR** instruction: Write turn count (`turnCircle`) from PR register to R register
+- Added **RToTurnCount** instruction: Write back turn count from R register to PR register
+- Enhanced turn count validation: only `-1/0/1` is allowed
+- Updated **TurnCountToR** / **RToTurnCount** to "single-axis replacement" mode: update only one axis each call, added `Joint_ID` to specify J1~J6
+- Turn count synchronization still supports only `-1/0/1`
 
 ### V1.3 (January 12, 2026)
 - Added **DecToHex** instruction: Convert from decimal to hexadecimal
@@ -381,4 +431,4 @@ CALL_SERVICE CM, DecToHex, R_ID=1, SR_ID=1
 
 ---
 
-**CM Custom Instructions Plugin | Version V1.3 | Updated: January 12, 2026 | © 2026**
+**CM Custom Instructions Plugin | Version V1.4 | Updated: March 25, 2026 | © 2026**
