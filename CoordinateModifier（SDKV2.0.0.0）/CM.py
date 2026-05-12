@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 **CM (Custom Module)** 用户自定义指令插件
-版本 V1.4.0 | 更新日期：2026年3月25日
+版本 V1.4.1 | 更新日期：2026年5月12日
+**验证基准：** 机器人控制软件 **7.8.B.0**；其它版本可能不兼容，部署前请自测。
 功能说明：
 本插件实现以下功能：坐标系（TF/UF）参数设置与从R/PR读取设置；
 R寄存器自增/自减；
@@ -26,6 +27,24 @@ R寄存器自增/自减；
 11. DecToHex - 从十进制转换为十六进制
 12. TurnCountToR - 将PR位姿回转数写入R寄存器（单轴）
 13. RToTurnCount - 将R寄存器回写到PR位姿回转数（单轴）
+
+连接诊断文件（示教器「日志」窗口可能无 Python 输出）：会依次尝试
+环境变量 AGILEBOT_CM_LOG_FILE、系统临时目录、当前工作目录、本文件所在目录、/tmp 等路径下的 agilebot_cm_plugin.log 。
+
+Arm 与官方 Python_v2.0.0.0/example 中 `Arm()` + `connect(IP)` 流程一致。
+未设置 AGILEBOT_ARM_LOCAL_PROXY 时：仅在 CPU 为 x86_64/amd64 时默认 Arm(local_proxy=True)
+（与 AGILEBOT_ARM_LOCAL_PROXY=true 一致，便于 PC 侧扩展服务）；示教器等 ARM 环境默认
+Arm(local_proxy=False)，避免启动 SDK 自带的 linux_amd64 本机代理二进制导致 Exec format error。
+任意架构均可显式设 true/false 覆盖。
+
+**与 Python SDK 2.0.1.0 更新说明对齐：**本插件已使用 `is_connected()`；为兼容仍带
+`is_connect()` 的 2.0.0.x 运行库，长连接复用处会优先 `is_connected` 再回退 `is_connect`。
+`get_version` 已更名为 `get_controller_version`（本插件未直接调用）。底层通讯与本地
+proxy 行为以所安装 Agilebot 包版本为准。
+
+ARM 示教器上若未配置示教器 IP，会尝试将「本机检测到的 IPv4」作为 `connect` 第二参数
+（见 `__resolve_robot_and_teach_ips`）；可用 `AGILEBOT_AUTO_TEACH_IP_ON_ARM=0` 关闭，
+用 `AGILEBOT_TEACH_PANEL_IP` 手动指定更准确。
 
 """
 
@@ -120,10 +139,20 @@ logger = _LoggerAdapter(globals().get("logger"))
 
 from Agilebot import Arm, Extension, StatusCodeEnum
 import copy
+import functools
 import math
+import os
+import platform
+import socket
+import sys
+import tempfile
+import threading
+from datetime import datetime
 
-# 全局Arm对象，用于长连接
+# 全局Arm对象，用于长连接；_global_connect_fingerprint 记录上次成功 connect 的参数，变更则重连
+# 指纹为 (控制柜 IP, 示教器 IP 或空串)，与官方 connect(arm_controller_ip, teach_panel_ip) 一致
 _global_arm = None
+_global_connect_fingerprint = None
 
 # 明确指定导出的公开指令函数，隐藏私有辅助函数
 __all__ = [
@@ -284,63 +313,481 @@ class PrecisionTransform:
         return inv
 
 
-def __get_robot_ip():
-    """
-    获取机器人IP地址
+_CM_CONN_LOG_FILE_INITIALIZED = False
+_CM_CONN_LOG_LOCK = threading.Lock()
+_CM_CONN_LOG_RESOLVED_PATH = None
 
-    SDK 2.0.0.0版本中，Extension类可以独立使用来获取机器人IP地址。
+_LOG_BASENAME = "agilebot_cm_plugin.log"
 
-    返回：
-    - str: 机器人IP地址，失败返回None
-    """
+
+def __cm_candidate_log_paths():
+    """可写路径候选（优先环境变量，其次临时目录、工作目录、本文件目录、Unix 常见临时目录）。"""
+    paths = []
+    ev = os.environ.get("AGILEBOT_CM_LOG_FILE")
+    if ev and str(ev).strip():
+        paths.append(os.path.abspath(str(ev).strip()))
     try:
-        # SDK 2.0.0.0中，Extension类可以独立实例化
-        extension = Extension()
-        robot_ip = extension.get_robot_ip()
-        return robot_ip
-    except Exception as ex:
-        logger.error(f"获取机器人IP失败: {ex}")
+        paths.append(os.path.abspath(os.path.join(tempfile.gettempdir(), _LOG_BASENAME)))
+    except Exception:
+        pass
+    try:
+        paths.append(os.path.abspath(os.path.join(os.getcwd(), _LOG_BASENAME)))
+    except Exception:
+        pass
+    try:
+        here = globals().get("__file__")
+        if here:
+            paths.append(os.path.abspath(os.path.join(os.path.dirname(here), _LOG_BASENAME)))
+    except Exception:
+        pass
+    if os.name != "nt":
+        for extra in ("/tmp", "/var/tmp"):
+            paths.append(os.path.join(extra, _LOG_BASENAME))
+    seen = set()
+    out = []
+    for p in paths:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def __cm_ensure_log_path():
+    """解析首个可追加写入的日志路径并缓存。"""
+    global _CM_CONN_LOG_RESOLVED_PATH
+    if _CM_CONN_LOG_RESOLVED_PATH:
+        try:
+            with open(_CM_CONN_LOG_RESOLVED_PATH, "a", encoding="utf-8"):
+                pass
+            return _CM_CONN_LOG_RESOLVED_PATH
+        except Exception:
+            _CM_CONN_LOG_RESOLVED_PATH = None
+    for p in __cm_candidate_log_paths():
+        try:
+            d = os.path.dirname(p)
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(p, "a", encoding="utf-8", newline="\n") as f:
+                f.write("")
+            _CM_CONN_LOG_RESOLVED_PATH = p
+            return p
+        except Exception:
+            continue
+    return None
+
+
+def __cm_append_tagged_file(tag: str, msg: str):
+    """向同一日志文件追加一行，tag 为 CM连接 / CM指令。"""
+    global _CM_CONN_LOG_FILE_INITIALIZED
+    path = __cm_ensure_log_path()
+    if path is None:
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} [{tag}] {msg}\n"
+    try:
+        with _CM_CONN_LOG_LOCK:
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                if not _CM_CONN_LOG_FILE_INITIALIZED:
+                    _CM_CONN_LOG_FILE_INITIALIZED = True
+                    f.write(
+                        f"\n======== CM 插件日志（连接 + 指令）========\n"
+                        f"# 本文件路径: {path}\n"
+                        f"# 自定义路径可设置环境变量 AGILEBOT_CM_LOG_FILE\n"
+                    )
+                f.write(line)
+    except Exception:
+        pass
+
+
+def __cm_conn_log(msg: str):
+    """连接排查：LoggerAdapter（logger+stdout）+ 日志文件。"""
+    logger.info("[CM连接] %s", msg)
+    __cm_append_tagged_file("CM连接", msg)
+
+
+def __cm_instr_log(msg: str):
+    """指令执行：与 [CM连接] 一并写入同一文件，便于界面/导出检索。"""
+    logger.info("[CM指令] %s", msg)
+    __cm_append_tagged_file("CM指令", msg)
+
+
+def __cm_log_instruction(name: str):
+    """装饰导出指令：须用 wraps 保留原签名，否则扩展服务会按 (*args,**kwargs) 要求 body 导致 400。"""
+
+    def _wrap(fn):
+        @functools.wraps(fn)
+        def _inner(*args, **kwargs):
+            try:
+                parts = [repr(x) for x in args]
+                parts.extend(f"{k}={v!r}" for k, v in kwargs.items())
+                sig = ", ".join(parts)
+                if len(sig) > 800:
+                    sig = sig[:800] + "..."
+                __cm_instr_log(f"{name} 开始({sig})")
+            except Exception:
+                __cm_instr_log(f"{name} 开始(参数摘要失败)")
+            try:
+                ret = fn(*args, **kwargs)
+                if isinstance(ret, dict):
+                    __cm_instr_log(
+                        f"{name} 结束 success={ret.get('success')} "
+                        f"error={ret.get('error')!r} message={ret.get('message')!r}"
+                    )
+                else:
+                    __cm_instr_log(f"{name} 结束 返回类型={type(ret).__name__}")
+                return ret
+            except Exception as ex:
+                __cm_instr_log(f"{name} 抛出异常: {ex!r}")
+                raise
+
+        return _inner
+
+    return _wrap
+
+
+def __cm_bootstrap_trace():
+    """
+    import 本模块时执行：证明 Python 已加载本文件。
+    若仍完全没有磁盘日志且 stderr 也无输出，多为解释器/远程服务未加载本插件（与 INTERPRETER_SERVICE 相关）。
+    """
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = (
+        f"{ts} [CM引导] Python 已加载 CM.py (SDK2.0)。"
+        f"后续连接步骤见 [CM连接] 前缀；本行不依赖是否执行自定义指令。\n"
+    )
+    ok = []
+    for p in __cm_candidate_log_paths():
+        try:
+            d = os.path.dirname(p)
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(p, "a", encoding="utf-8", newline="\n") as f:
+                f.write(line)
+            ok.append(p)
+        except Exception:
+            continue
+    try:
+        sys.stderr.write(line)
+        if ok:
+            sys.stderr.write(f"[CM引导] 已写入以下可写路径: {ok}\n")
+        else:
+            sys.stderr.write(
+                "[CM引导] 所有候选日志路径均不可写，请在示教器上设置环境变量 AGILEBOT_CM_LOG_FILE 指向 U 盘等可写路径。\n"
+            )
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+__cm_bootstrap_trace()
+
+
+def __extension_try_teach_panel_ip(extension):
+    """若 SDK 提供示教器地址 getter，则用于 connect 第二参数（环境变量未设置时）。"""
+    for name in (
+        "get_teach_panel_ip",
+        "get_teach_pendant_ip",
+        "get_teaching_panel_ip",
+        "get_tp_ip",
+    ):
+        fn = getattr(extension, name, None)
+        if not callable(fn):
+            continue
+        try:
+            v = fn()
+        except Exception as ex:
+            __cm_conn_log("Extension.%s() 异常: %s" % (name, ex))
+            continue
+        if v is None:
+            continue
+        v = str(v).strip()
+        if v:
+            __cm_conn_log("示教器 IP 来自 Extension.%s(): %s" % (name, v))
+            return v
+    return None
+
+
+def __detect_local_ipv4_towards(peer_ip: str):
+    """
+    通过 UDP 选路得到访问 peer 时本机所用 IPv4，用作示教器地址猜测。
+    优先对控制柜 IP 选路（无公网时仍可用）；失败再尝试 8.8.8.8。
+    设 AGILEBOT_DETECT_TEACH_IP=0/false/off 可关闭。
+    """
+    raw = os.environ.get("AGILEBOT_DETECT_TEACH_IP")
+    if raw is not None and str(raw).strip().lower() in ("0", "false", "no", "off"):
         return None
+    if not peer_ip:
+        return None
+    for target in (peer_ip, "8.8.8.8"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.settimeout(0.8)
+                s.connect((target, 7))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+            if ip and not str(ip).startswith("127."):
+                return str(ip).strip()
+        except Exception:
+            continue
+    return None
+
+
+def __resolve_robot_and_teach_ips():
+    """
+    解析 connect(控制柜, 示教器?) 所需地址。
+
+    控制柜：AGILEBOT_ROBOT_IP / ROBOT_IP 优先，否则 Extension.get_robot_ip()。
+    示教器：AGILEBOT_TEACH_PANEL_IP / TEACH_PANEL_IP 优先，否则尝试 Extension 上常见 getter。
+    在 ARM（非 x86_64/amd64）且仍无示教器地址时，默认用本机检测 IPv4 作为第二参数
+    （可设 AGILEBOT_AUTO_TEACH_IP_ON_ARM=0 关闭）。
+
+    返回 (robot_ip 或 None, teach_panel_ip 或 None)；仅当至少一端需从 Extension 读取时才实例化 Extension。
+    """
+    robot_ip = None
+    for env_key in ("AGILEBOT_ROBOT_IP", "ROBOT_IP"):
+        override = os.environ.get(env_key)
+        if override:
+            override = str(override).strip()
+            if override:
+                __cm_conn_log("控制柜 IP 来自环境变量 %s: %s" % (env_key, override))
+                robot_ip = override
+                break
+
+    teach_ip = None
+    for env_key in ("AGILEBOT_TEACH_PANEL_IP", "TEACH_PANEL_IP"):
+        v = os.environ.get(env_key)
+        if v:
+            v = str(v).strip()
+            if v:
+                __cm_conn_log("示教器 IP 来自环境变量 %s: %s" % (env_key, v))
+                teach_ip = v
+                break
+
+    need_extension = robot_ip is None or teach_ip is None
+    if not need_extension:
+        return robot_ip, teach_ip
+
+    try:
+        extension = Extension()
+        if robot_ip is None:
+            raw = extension.get_robot_ip()
+            if raw is not None:
+                raw = str(raw).strip()
+            if raw:
+                __cm_conn_log("Extension.get_robot_ip() 返回控制柜 IP: %s" % raw)
+                robot_ip = raw
+            else:
+                __cm_conn_log("Extension.get_robot_ip() 返回空字符串或 None")
+        if teach_ip is None:
+            teach_ip = __extension_try_teach_panel_ip(extension)
+    except Exception as ex:
+        logger.error("Extension 解析连接地址失败: %s", ex)
+        __cm_conn_log("Extension 解析连接地址异常: %s" % ex)
+
+    if (
+        teach_ip is None
+        and robot_ip
+        and not __cm_default_local_proxy_when_unset()
+    ):
+        raw_auto = os.environ.get("AGILEBOT_AUTO_TEACH_IP_ON_ARM")
+        if raw_auto is None or str(raw_auto).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            guess = __detect_local_ipv4_towards(robot_ip)
+            if guess and guess != robot_ip:
+                __cm_conn_log(
+                    "ARM 侧未取到示教器 IP：使用本机检测 IPv4 %s 作为 connect 第二参数"
+                    % guess
+                    + "（可用 AGILEBOT_TEACH_PANEL_IP 覆盖；AGILEBOT_AUTO_TEACH_IP_ON_ARM=0 关闭）"
+                )
+                teach_ip = guess
+
+    return robot_ip, teach_ip
+
+
+def __connect_fingerprint(controller_ip: str, teach_panel_ip):
+    """与当前 connect 调用参数一致的身份，用于判断是否需要丢弃长连接。"""
+    tp = teach_panel_ip if teach_panel_ip else ""
+    return (controller_ip, tp)
+
+
+def __cm_default_local_proxy_when_unset():
+    """SDK 附带的本机代理为 linux_amd64；ARM 示教器上启用会 Exec format error。"""
+    m = (platform.machine() or "").lower()
+    return m in ("x86_64", "amd64")
+
+
+def __create_arm_instance():
+    """
+    构造 Arm（见官方文档 Arm(local_proxy=...) 与 develop/Python_v2.0.0.0/example 用法）。
+
+    环境变量 AGILEBOT_ARM_LOCAL_PROXY: true/1/yes/on 为 True；false/0/no/off 为 False。
+
+    未设置时：x86_64/amd64 默认 True（等同 AGILEBOT_ARM_LOCAL_PROXY=true，便于 PC 扩展服务）；
+    其余架构（如 aarch64 示教器）默认 False，避免执行 amd64 代理进程失败。
+    """
+    raw = os.environ.get("AGILEBOT_ARM_LOCAL_PROXY")
+    mach = platform.machine() or "?"
+
+    def _parse_env(s):
+        t = str(s).strip().lower()
+        if t in ("1", "true", "yes", "on"):
+            return True
+        if t in ("0", "false", "no", "off"):
+            return False
+        return None
+
+    if raw is None:
+        use = __cm_default_local_proxy_when_unset()
+        __cm_conn_log(
+            "未设置 AGILEBOT_ARM_LOCAL_PROXY；CPU=%s，默认 Arm(local_proxy=%s)"
+            % (mach, use)
+            + ("（x86_64/amd64 等同 true；ARM 请保持 False 或依赖内置代理）" if use else "（避免 linux_amd64 代理在 ARM 上 Exec format error）")
+        )
+        return Arm(local_proxy=use)
+
+    parsed = _parse_env(raw)
+    if parsed is not None:
+        __cm_conn_log(
+            "AGILEBOT_ARM_LOCAL_PROXY=%r，创建 Arm(local_proxy=%s)" % (raw, parsed)
+        )
+        return Arm(local_proxy=parsed)
+
+    fallback = __cm_default_local_proxy_when_unset()
+    __cm_conn_log(
+        "AGILEBOT_ARM_LOCAL_PROXY 未识别(%r)；CPU=%s，回退 Arm(local_proxy=%s)"
+        % (raw, mach, fallback)
+    )
+    return Arm(local_proxy=fallback)
+
+
+def __arm_connect(arm, controller_ip: str, teach_panel_ip):
+    """按官方签名连接；失败时由调用方 disconnect（参见文档 connect 示例）。"""
+    if teach_panel_ip:
+        __cm_conn_log(f"调用 connect(控制柜={controller_ip}, 示教器={teach_panel_ip})")
+        return arm.connect(controller_ip, teach_panel_ip)
+    __cm_conn_log(f"调用 connect(控制柜={controller_ip})")
+    return arm.connect(controller_ip)
+
+
+def __disconnect_global_arm():
+    """释放全局 Arm 连接（官方推荐 disconnect()）。"""
+    global _global_arm, _global_connect_fingerprint
+    arm = _global_arm
+    _global_arm = None
+    _global_connect_fingerprint = None
+    if arm is None:
+        __cm_conn_log("disconnect_global_arm: 无活动连接，跳过")
+        return
+    used = None
+    for name in ("disconnect", "Disconnect", "close", "Close"):
+        fn = getattr(arm, name, None)
+        if callable(fn):
+            try:
+                fn()
+                used = name
+                break
+            except Exception as ex:
+                logger.warning("[CM连接] %s() 异常: %s", name, ex)
+    __cm_conn_log(f"全局 Arm 已释放，调用的断开方法: {used or '无可用方法'}")
+
+
+def __arm_is_connected(arm):
+    """
+    查询 Arm 是否已连接。SDK 2.0.1.0 起标准方法为 is_connected()（原 is_connect 已更名）；
+    仍兼容仅提供 is_connect 的旧包。
+    """
+    fn = getattr(arm, "is_connected", None)
+    if callable(fn):
+        try:
+            return fn()
+        except Exception:
+            pass
+    fn = getattr(arm, "is_connect", None)
+    if callable(fn):
+        try:
+            return fn()
+        except Exception:
+            pass
+    return False
 
 
 def __get_arm_connection():
     """
     获取Arm连接（长连接机制）
-    如果未连接则连接，已连接则复用
+    如果未连接则连接，已连接则复用；若控制柜/示教器连接参数变化则先 disconnect 再连。
 
     返回：
     - Arm: Arm对象，失败返回None
     - str: 错误信息，成功返回None
     """
-    global _global_arm
+    global _global_arm, _global_connect_fingerprint
 
     try:
-        # 如果已有连接且连接状态正常，直接返回
-        if _global_arm is not None:
-            try:
-                if _global_arm.is_connected():
-                    return _global_arm, None
-            except:
-                # 连接状态检查失败，重置连接
-                _global_arm = None
-
-        # 创建新连接
-        robot_ip = __get_robot_ip()
+        __cm_conn_log("开始获取 Arm 连接")
+        robot_ip, teach_opt = __resolve_robot_and_teach_ips()
         if robot_ip is None:
+            __cm_conn_log("失败: 无法解析控制柜 IP（检查 Extension / 环境变量 AGILEBOT_ROBOT_IP）")
             return None, "无法获取机器人IP地址"
+        fp = __connect_fingerprint(robot_ip, teach_opt)
+        __cm_conn_log(f"当前连接指纹 (控制柜,示教器): {fp}")
 
-        _global_arm = Arm()
-        ret = _global_arm.connect(robot_ip)
+        if _global_arm is not None:
+            if _global_connect_fingerprint is not None and fp != _global_connect_fingerprint:
+                logger.warning(
+                    f"检测到连接参数变化（已连接 {_global_connect_fingerprint} -> 当前 {fp}），断开旧连接后重连"
+                )
+                __cm_conn_log(f"指纹变化，丢弃旧连接: {_global_connect_fingerprint} -> {fp}")
+                __disconnect_global_arm()
+            else:
+                try:
+                    if __arm_is_connected(_global_arm):
+                        if _global_connect_fingerprint is None:
+                            _global_connect_fingerprint = fp
+                        __cm_conn_log("复用已有连接，连接状态为已连接")
+                        return _global_arm, None
+                except Exception as ex:
+                    __cm_conn_log(f"连接状态检查异常，将重连: {ex}")
+                __cm_conn_log("已有 Arm 实例但未连接或状态异常，执行断开并重建")
+                __disconnect_global_arm()
+
+        _global_arm = __create_arm_instance()
+        ret = __arm_connect(_global_arm, robot_ip, teach_opt)
         if ret != StatusCodeEnum.OK:
-            _global_arm = None
+            __disconnect_global_arm()
             error_msg = ret.errmsg if hasattr(ret, 'errmsg') else str(ret)
+            __cm_conn_log(f"connect 失败: {error_msg} (返回值: {ret!r})")
+            __cm_conn_log(
+                "排查提示：确认示教器与控制柜同网段且可访问该 IP；若系统里控制柜地址已改，"
+                "可设环境变量 AGILEBOT_ROBOT_IP 覆盖 Extension 返回值；ARM 下已自动补示范教器 IP 时仍失败，"
+                "请用 AGILEBOT_TEACH_PANEL_IP 改为示教器真实 IP；也可设 AGILEBOT_AUTO_TEACH_IP_ON_ARM=0 后仅用单参数 connect。"
+            )
+            if not __cm_default_local_proxy_when_unset():
+                __cm_conn_log(
+                    "当前 CPU 非 x86_64/amd64：请勿设 AGILEBOT_ARM_LOCAL_PROXY=true（本机代理为 linux_amd64，"
+                    "在示教器上会 Exec format error）；本条「无法连接控制器」与网络/双参数 connect 有关，与是否设 true 无关。"
+                )
             return None, f"连接机器人失败，错误代码：{error_msg}"
 
+        _global_connect_fingerprint = fp
+        __cm_conn_log(f"connect 成功，指纹已记录: {fp}")
         return _global_arm, None
 
     except Exception as ex:
         logger.error(f"获取Arm连接失败: {ex}")
-        _global_arm = None
+        __cm_conn_log(f"获取 Arm 连接未捕获异常: {ex}")
+        __disconnect_global_arm()
         return None, f"获取连接失败：{str(ex)}"
 
 
@@ -500,6 +947,7 @@ def __create_pr_register(arm, pr_id: int):
         return None, StatusCodeEnum.CONTROLLER_ERROR
 
 
+@__cm_log_instruction("SetTF")
 def SetTF(ID: int, Pos: int, Value: float) -> dict:
     """
     工具坐标系
@@ -583,6 +1031,7 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetUF")
 def SetUF(ID: int, Pos: int, Value: float) -> dict:
     """
     用户坐标系
@@ -666,6 +1115,7 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetTF_R")
 def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
     """
     工具坐标系（从R寄存器读取值）
@@ -755,6 +1205,7 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetUF_R")
 def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
     """
     用户坐标系（从R寄存器读取值）
@@ -844,6 +1295,7 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetTF_PR")
 def SetTF_PR(ID: int, PR_ID: int) -> dict:
     """
     工具坐标系（从PR寄存器读取完整位姿）
@@ -921,6 +1373,7 @@ def SetTF_PR(ID: int, PR_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetUF_PR")
 def SetUF_PR(ID: int, PR_ID: int) -> dict:
     """
     用户坐标系（从PR寄存器读取完整位姿）
@@ -998,6 +1451,7 @@ def SetUF_PR(ID: int, PR_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("Incr")
 def Incr(R_ID: int, Step: float = 1.0) -> dict:
     """
     R寄存器自增
@@ -1053,6 +1507,7 @@ def Incr(R_ID: int, Step: float = 1.0) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("Decr")
 def Decr(R_ID: int, Step: float = 1.0) -> dict:
     """
     R寄存器自减
@@ -1108,6 +1563,7 @@ def Decr(R_ID: int, Step: float = 1.0) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("Strp")
 def Strp(SR_ID: int, R_ID_Status: int, PR_ID: int, R_ID_Error: int) -> dict:
     """
     拆解字符串数据到PR寄存器（视觉数据格式）
@@ -1476,6 +1932,7 @@ def Strp(SR_ID: int, R_ID_Status: int, PR_ID: int, R_ID_Error: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("TFShift")
 def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, RefVis_ID: int = 61, ActVis_ID: int = 62) -> dict:
     """
     工具坐标系补正（基于视觉反馈）
@@ -1680,6 +2137,7 @@ def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, Ref
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("DecToHex")
 def DecToHex(R_ID: int, SR_ID: int) -> dict:
     """
     从十进制转换为十六进制
@@ -1790,6 +2248,7 @@ def DecToHex(R_ID: int, SR_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("TurnCountToR")
 def TurnCountToR(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
     """
     读取指定PR寄存器中的回转数（turnCircle）指定轴，并写入单个R寄存器
@@ -1959,6 +2418,7 @@ def TurnCountToR(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
 
 
 
+@__cm_log_instruction("RToTurnCount")
 def RToTurnCount(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
     """
     将连续R寄存器中的值回写到PR寄存器的回转数（turnCircle）

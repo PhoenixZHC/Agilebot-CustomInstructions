@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 **CM (Custom Module)** 是一个用户自定义指令插件
-版本 V1.4 | 更新日期：2026年3月25日
+版本 V1.4.1 | 更新日期：2026年5月12日
+**验证基准：** 机器人控制软件 **7.8.B.0**；其它版本可能不兼容，部署前请自测。
 
 功能说明：
 本插件实现坐标系（TF/UF）参数设置与从R/PR读取设置；R寄存器自增/自减；字符串数据拆解（Strp）写入PR；工具坐标系视觉补正（TFShift）；十进制到十六进制转换（DecToHex）；以及回转标记在 `turnCircle` 与单个R之间的同步（TurnCountToR / RToTurnCount，单轴替换，`Joint_ID` 指定 J1~J6）。
@@ -21,9 +22,17 @@
 11. DecToHex - 从十进制转换为十六进制
 12. TurnCountToR - 将PR位姿回转数写入R寄存器（单轴）
 13. RToTurnCount - 将R寄存器回写到PR位姿回转数（单轴）
+
+连接诊断文件（示教器「日志」窗口可能无输出）：会依次尝试
+环境变量 AGILEBOT_CM_LOG_FILE、系统临时目录、当前工作目录、本文件所在目录、/tmp 等路径下的 agilebot_cm_plugin.log 。
 """
 
 import logging
+import os
+import sys
+import tempfile
+import threading
+from datetime import datetime
 
 # 获取全局logger实例，只能在简单服务中使用
 logger = globals().get('logger')
@@ -43,15 +52,202 @@ else:
         except Exception:
             pass
 
+
+_CM_CONN_LOG_FILE_INITIALIZED = False
+_CM_CONN_LOG_LOCK = threading.Lock()
+_CM_CONN_LOG_RESOLVED_PATH = None
+_LOG_BASENAME = "agilebot_cm_plugin.log"
+
+
+def __cm_candidate_log_paths():
+    paths = []
+    ev = os.environ.get("AGILEBOT_CM_LOG_FILE")
+    if ev and str(ev).strip():
+        paths.append(os.path.abspath(str(ev).strip()))
+    try:
+        paths.append(os.path.abspath(os.path.join(tempfile.gettempdir(), _LOG_BASENAME)))
+    except Exception:
+        pass
+    try:
+        paths.append(os.path.abspath(os.path.join(os.getcwd(), _LOG_BASENAME)))
+    except Exception:
+        pass
+    try:
+        here = globals().get("__file__")
+        if here:
+            paths.append(os.path.abspath(os.path.join(os.path.dirname(here), _LOG_BASENAME)))
+    except Exception:
+        pass
+    if os.name != "nt":
+        for extra in ("/tmp", "/var/tmp"):
+            paths.append(os.path.join(extra, _LOG_BASENAME))
+    seen = set()
+    out = []
+    for p in paths:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def __cm_ensure_log_path():
+    global _CM_CONN_LOG_RESOLVED_PATH
+    if _CM_CONN_LOG_RESOLVED_PATH:
+        try:
+            with open(_CM_CONN_LOG_RESOLVED_PATH, "a", encoding="utf-8"):
+                pass
+            return _CM_CONN_LOG_RESOLVED_PATH
+        except Exception:
+            _CM_CONN_LOG_RESOLVED_PATH = None
+    for p in __cm_candidate_log_paths():
+        try:
+            d = os.path.dirname(p)
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(p, "a", encoding="utf-8", newline="\n") as f:
+                f.write("")
+            _CM_CONN_LOG_RESOLVED_PATH = p
+            return p
+        except Exception:
+            continue
+    return None
+
+
+def __cm_append_tagged_file(tag: str, msg: str):
+    global _CM_CONN_LOG_FILE_INITIALIZED
+    path = __cm_ensure_log_path()
+    if path is None:
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} [{tag}] {msg}\n"
+    try:
+        with _CM_CONN_LOG_LOCK:
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                if not _CM_CONN_LOG_FILE_INITIALIZED:
+                    _CM_CONN_LOG_FILE_INITIALIZED = True
+                    f.write(
+                        f"\n======== CM 插件日志（连接 + 指令）========\n"
+                        f"# 本文件路径: {path}\n"
+                        f"# 自定义路径可设置环境变量 AGILEBOT_CM_LOG_FILE\n"
+                    )
+                f.write(line)
+    except Exception:
+        pass
+
+
+def __cm_conn_log(msg: str):
+    """连接诊断：宿主 logger + stdout + 日志文件（便于示教器导出/拷贝）。"""
+    text = f"[CM连接] {msg}"
+    try:
+        logger.info(text)
+    except Exception:
+        pass
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
+    __cm_append_tagged_file("CM连接", msg)
+
+
+def __cm_instr_log(msg: str):
+    """指令执行：与 [CM连接] 写入同一文件。"""
+    text = f"[CM指令] {msg}"
+    try:
+        logger.info(text)
+    except Exception:
+        pass
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
+    __cm_append_tagged_file("CM指令", msg)
+
+
+def __cm_log_instruction(name: str):
+    """须用 wraps 保留原函数签名，否则扩展服务 HTTP 反射成 (*args,**kwargs) 会 400 缺少 args/kwargs。"""
+
+    def _wrap(fn):
+        @functools.wraps(fn)
+        def _inner(*args, **kwargs):
+            try:
+                parts = [repr(x) for x in args]
+                parts.extend(f"{k}={v!r}" for k, v in kwargs.items())
+                sig = ", ".join(parts)
+                if len(sig) > 800:
+                    sig = sig[:800] + "..."
+                __cm_instr_log(f"{name} 开始({sig})")
+            except Exception:
+                __cm_instr_log(f"{name} 开始(参数摘要失败)")
+            try:
+                ret = fn(*args, **kwargs)
+                if isinstance(ret, dict):
+                    __cm_instr_log(
+                        f"{name} 结束 success={ret.get('success')} "
+                        f"error={ret.get('error')!r} message={ret.get('message')!r}"
+                    )
+                else:
+                    __cm_instr_log(f"{name} 结束 返回类型={type(ret).__name__}")
+                return ret
+            except Exception as ex:
+                __cm_instr_log(f"{name} 抛出异常: {ex!r}")
+                raise
+
+        return _inner
+
+    return _wrap
+
+
+def __cm_bootstrap_trace():
+    """import 时执行：证明已加载 CM_oldsdk (SDK1.7)。"""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = (
+        f"{ts} [CM引导] Python 已加载 CM_oldsdk.py (SDK1.7)。"
+        f"后续连接步骤见 [CM连接]；本行不依赖是否执行自定义指令。\n"
+    )
+    ok = []
+    for p in __cm_candidate_log_paths():
+        try:
+            d = os.path.dirname(p)
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(p, "a", encoding="utf-8", newline="\n") as f:
+                f.write(line)
+            ok.append(p)
+        except Exception:
+            continue
+    try:
+        sys.stderr.write(line)
+        if ok:
+            sys.stderr.write(f"[CM引导] 已写入以下可写路径: {ok}\n")
+        else:
+            sys.stderr.write(
+                "[CM引导] 所有候选日志路径均不可写，请设置环境变量 AGILEBOT_CM_LOG_FILE 指向 U 盘等可写路径。\n"
+            )
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+__cm_bootstrap_trace()
+
+
 from Agilebot.IR.A.arm import Arm
 from Agilebot.IR.A.extension import Extension
 from Agilebot.IR.A.status_code import StatusCodeEnum
 from Agilebot.IR.A.sdk_types import CoordinateSystemType
 import copy
+import functools
 import math
 
-# 全局Arm对象，用于长连接
+# 全局Arm对象，用于长连接；_global_connect_fingerprint 记录上次成功 connect 的参数，变更则重连
 _global_arm = None
+_global_connect_fingerprint = None
 
 # 明确指定导出的公开指令函数，隐藏私有辅助函数
 __all__ = [
@@ -216,55 +412,185 @@ def __get_robot_ip():
     """
     获取机器人IP地址
 
+    优先级：
+    1. 环境变量 AGILEBOT_ROBOT_IP 或 ROBOT_IP（非空则直接使用，便于改IP后手动指定）
+    2. Extension().get_robot_ip()（来自宿主/示教器侧配置）
+
     返回：
     - str: 机器人IP地址，失败返回None
     """
+    for env_key in ("AGILEBOT_ROBOT_IP", "ROBOT_IP"):
+        override = os.environ.get(env_key)
+        if override:
+            override = str(override).strip()
+            if override:
+                __cm_conn_log(f"控制柜 IP 来自环境变量 {env_key}: {override}")
+                return override
     try:
         extension = Extension()
         robot_ip = extension.get_robot_ip()
-        return robot_ip
+        if robot_ip is not None:
+            robot_ip = str(robot_ip).strip()
+        if robot_ip:
+            __cm_conn_log(f"Extension.get_robot_ip() 返回控制柜 IP: {robot_ip}")
+        else:
+            __cm_conn_log("Extension.get_robot_ip() 返回空字符串或 None")
+        return robot_ip if robot_ip else None
     except Exception as ex:
         logger.error(f"获取机器人IP失败: {ex}")
+        __cm_conn_log(f"Extension.get_robot_ip() 异常: {ex}")
         return None
+
+
+def __get_optional_teach_panel_ip():
+    """
+    connect(arm_controller_ip, teach_panel_ip) 第二参数（与官方 Python SDK 4.1-arm 一致）。
+    若当前 1.7 SDK 的 connect 仅支持单参数，将在 __arm_connect 中自动回退。
+    """
+    for env_key in ("AGILEBOT_TEACH_PANEL_IP", "TEACH_PANEL_IP"):
+        v = os.environ.get(env_key)
+        if v:
+            v = str(v).strip()
+            if v:
+                __cm_conn_log(f"示教器 IP 来自环境变量 {env_key}: {v}")
+                return v
+    return None
+
+
+def __connect_fingerprint(controller_ip: str, teach_panel_ip):
+    tp = teach_panel_ip if teach_panel_ip else ""
+    return (controller_ip, tp)
+
+
+def __create_arm_instance():
+    """
+    Arm(local_proxy=...) 与官方文档一致；当前 SDK 若不支持该参数则回退为 Arm()。
+    环境变量 AGILEBOT_ARM_LOCAL_PROXY: true/1/yes/on 为 True；false/0/no/off 为 False。
+    """
+    raw = os.environ.get("AGILEBOT_ARM_LOCAL_PROXY")
+    if raw is None:
+        __cm_conn_log("创建 Arm() 默认 local_proxy（未设置 AGILEBOT_ARM_LOCAL_PROXY）")
+        return Arm()
+    s = str(raw).strip().lower()
+    try:
+        if s in ("1", "true", "yes", "on"):
+            __cm_conn_log("创建 Arm(local_proxy=True)（环境变量 AGILEBOT_ARM_LOCAL_PROXY）")
+            return Arm(local_proxy=True)
+        if s in ("0", "false", "no", "off"):
+            __cm_conn_log("创建 Arm(local_proxy=False)（环境变量 AGILEBOT_ARM_LOCAL_PROXY）")
+            return Arm(local_proxy=False)
+    except TypeError:
+        logger.warning("当前 SDK 的 Arm 不支持 local_proxy 参数，已使用 Arm()")
+        __cm_conn_log("Arm(local_proxy=...) 不支持，已回退 Arm()")
+    __cm_conn_log("创建 Arm() 默认 local_proxy")
+    return Arm()
+
+
+def __arm_connect(arm, controller_ip: str, teach_panel_ip):
+    if teach_panel_ip:
+        __cm_conn_log(f"调用 connect(控制柜={controller_ip}, 示教器={teach_panel_ip})")
+        try:
+            return arm.connect(controller_ip, teach_panel_ip)
+        except TypeError:
+            logger.warning("当前 SDK 的 connect 不支持第二参数，已回退为 connect(控制柜IP)")
+            __cm_conn_log("connect 第二参数不支持，回退 connect(控制柜IP)")
+            return arm.connect(controller_ip)
+    __cm_conn_log(f"调用 connect(控制柜={controller_ip})")
+    return arm.connect(controller_ip)
+
+
+def __arm_is_connected(arm):
+    """优先 is_connected()（新版），否则 is_connect()（1.7 旧名）。"""
+    fn = getattr(arm, "is_connected", None)
+    if callable(fn):
+        try:
+            return fn()
+        except Exception:
+            pass
+    fn = getattr(arm, "is_connect", None)
+    if callable(fn):
+        return fn()
+    return False
+
+
+def __disconnect_global_arm():
+    """释放全局 Arm 连接（优先 disconnect()）。"""
+    global _global_arm, _global_connect_fingerprint
+    arm = _global_arm
+    _global_arm = None
+    _global_connect_fingerprint = None
+    if arm is None:
+        __cm_conn_log("disconnect_global_arm: 无活动连接，跳过")
+        return
+    used = None
+    for name in ("disconnect", "Disconnect", "close", "Close"):
+        fn = getattr(arm, name, None)
+        if callable(fn):
+            try:
+                fn()
+                used = name
+                break
+            except Exception as ex:
+                logger.warning(f"[CM连接] {name}() 异常: {ex}")
+    __cm_conn_log(f"全局 Arm 已释放，调用的断开方法: {used or '无可用方法'}")
 
 
 def __get_arm_connection():
     """
     获取Arm连接（长连接机制）
-    如果未连接则连接，已连接则复用
+    如果未连接则连接，已连接则复用；若控制柜/示教器连接参数变化则先断开再连。
 
     返回：
     - Arm: Arm对象，失败返回None
     - str: 错误信息，成功返回None
     """
-    global _global_arm
+    global _global_arm, _global_connect_fingerprint
 
     try:
-        # 如果已有连接且连接状态正常，直接返回
-        if _global_arm is not None:
-            try:
-                if _global_arm.is_connect():
-                    return _global_arm, None
-            except:
-                # 连接状态检查失败，重置连接
-                _global_arm = None
-
-        # 创建新连接
+        __cm_conn_log("开始获取 Arm 连接")
         robot_ip = __get_robot_ip()
         if robot_ip is None:
+            __cm_conn_log("失败: 无法解析控制柜 IP（检查 Extension / 环境变量 AGILEBOT_ROBOT_IP）")
             return None, "无法获取机器人IP地址"
 
-        _global_arm = Arm()
-        ret = _global_arm.connect(robot_ip)
+        teach_opt = __get_optional_teach_panel_ip()
+        fp = __connect_fingerprint(robot_ip, teach_opt)
+        __cm_conn_log(f"当前连接指纹 (控制柜,示教器): {fp}")
+
+        if _global_arm is not None:
+            if _global_connect_fingerprint is not None and fp != _global_connect_fingerprint:
+                logger.warning(
+                    f"检测到连接参数变化（已连接 {_global_connect_fingerprint} -> 当前 {fp}），断开旧连接后重连"
+                )
+                __cm_conn_log(f"指纹变化，丢弃旧连接: {_global_connect_fingerprint} -> {fp}")
+                __disconnect_global_arm()
+            else:
+                try:
+                    if __arm_is_connected(_global_arm):
+                        if _global_connect_fingerprint is None:
+                            _global_connect_fingerprint = fp
+                        __cm_conn_log("复用已有连接，在线检查为 True")
+                        return _global_arm, None
+                except Exception as ex:
+                    __cm_conn_log(f"在线状态检查异常，将重连: {ex}")
+                __cm_conn_log("已有 Arm 实例但未连接或状态异常，执行断开并重建")
+                __disconnect_global_arm()
+
+        _global_arm = __create_arm_instance()
+        ret = __arm_connect(_global_arm, robot_ip, teach_opt)
         if ret != StatusCodeEnum.OK:
-            _global_arm = None
+            __disconnect_global_arm()
+            __cm_conn_log(f"connect 失败，错误代码: {ret}")
             return None, f"连接机器人失败，错误代码：{ret}"
 
+        _global_connect_fingerprint = fp
+        __cm_conn_log(f"connect 成功，指纹已记录: {fp}")
         return _global_arm, None
 
     except Exception as ex:
         logger.error(f"获取Arm连接失败: {ex}")
-        _global_arm = None
+        __cm_conn_log(f"获取 Arm 连接未捕获异常: {ex}")
+        __disconnect_global_arm()
         return None, f"获取连接失败：{str(ex)}"
 
 
@@ -422,6 +748,7 @@ def __create_pr_register(arm, pr_id: int):
         return None, StatusCodeEnum.CONTROLLER_ERROR
 
 
+@__cm_log_instruction("SetTF")
 def SetTF(ID: int, Pos: int, Value: float) -> dict:
     """
     工具坐标系
@@ -508,6 +835,7 @@ def SetTF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetUF")
 def SetUF(ID: int, Pos: int, Value: float) -> dict:
     """
     用户坐标系
@@ -594,6 +922,7 @@ def SetUF(ID: int, Pos: int, Value: float) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetTF_R")
 def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
     """
     工具坐标系（从R寄存器读取值）
@@ -685,6 +1014,7 @@ def SetTF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetUF_R")
 def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
     """
     用户坐标系（从R寄存器读取值）
@@ -776,6 +1106,7 @@ def SetUF_R(ID: int, Pos: int, R_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetTF_PR")
 def SetTF_PR(ID: int, PR_ID: int) -> dict:
     """
     工具坐标系（从PR寄存器读取完整位姿）
@@ -887,6 +1218,7 @@ def SetTF_PR(ID: int, PR_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("SetUF_PR")
 def SetUF_PR(ID: int, PR_ID: int) -> dict:
     """
     用户坐标系（从PR寄存器读取完整位姿）
@@ -998,6 +1330,7 @@ def SetUF_PR(ID: int, PR_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("Incr")
 def Incr(R_ID: int, Step: float = 1.0) -> dict:
     """
     R寄存器自增
@@ -1051,6 +1384,7 @@ def Incr(R_ID: int, Step: float = 1.0) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("Decr")
 def Decr(R_ID: int, Step: float = 1.0) -> dict:
     """
     R寄存器自减
@@ -1104,6 +1438,7 @@ def Decr(R_ID: int, Step: float = 1.0) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("Strp")
 def Strp(SR_ID: int, R_ID_Status: int, PR_ID: int, R_ID_Error: int) -> dict:
     """
     拆解字符串数据到PR寄存器（视觉数据格式）
@@ -1468,6 +1803,7 @@ def Strp(SR_ID: int, R_ID_Status: int, PR_ID: int, R_ID_Error: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("TFShift")
 def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, RefVis_ID: int = 61, ActVis_ID: int = 62) -> dict:
     """
     工具坐标系补正（基于视觉反馈）
@@ -1662,6 +1998,7 @@ def TFShift(InputTF_ID: int = 1, ResultTF_ID: int = 3, CamPose_ID: int = 60, Ref
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("DecToHex")
 def DecToHex(R_ID: int, SR_ID: int) -> dict:
     """
     从十进制转换为十六进制
@@ -1770,6 +2107,7 @@ def DecToHex(R_ID: int, SR_ID: int) -> dict:
         return {"success": False, "error": f"执行失败：{str(ex)}"}
 
 
+@__cm_log_instruction("TurnCountToR")
 def TurnCountToR(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
     """
     读取指定PR寄存器中的回转数（turnCircle）指定轴，并写入单个R寄存器
@@ -1878,6 +2216,7 @@ def TurnCountToR(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
 
 
 
+@__cm_log_instruction("RToTurnCount")
 def RToTurnCount(PR_ID: int, R_ID: int, Joint_ID: int = 1) -> dict:
     """
     从R寄存器读取值，并替换PR寄存器指定轴（turnCircle）的回转标记（单轴替换）

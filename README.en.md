@@ -1,6 +1,6 @@
 # CM Custom Instructions Plugin
 
-**Version V1.4 | Updated: March 25, 2026**
+**Version V1.4.1 | Updated: May 12, 2026**
 
 ---
 
@@ -18,30 +18,14 @@
 
 ## Version Information
 
-This plugin provides two versions, corresponding to different SDK versions:
+The plugin ships in two folders by teach pendant **Python SDK**. **Industrial Bronze v7.8.B.0** and **collaborative Copper v7.7.H.1** were both tested with **either** folder. Other controller builds are out of scope; verify before deployment.
 
-### SDK v1.7.1.3 Version
-- **Directory:** `CoordinateModifier（SDKV1.7.1.3）/`
-- **Main File:** `CM_oldsdk.py`
-- **Compatible SDK:** Python SDK v1.7.1.3
-- **Compatible Robot Software Versions:**
-  - Copper v7.6.X.X
-  - Bronze v7.6.X.X
+| Python SDK | Directory | Entry file |
+|------------|-----------|------------|
+| **1.7.x** | `CoordinateModifier（SDKV1.7.1.3）/` | `CM_oldsdk.py` |
+| **2.0.x** | `CoordinateModifier（SDKV2.0.0.0）/` | `CM.py` |
 
-### SDK v2.0.0.0 Version
-- **Directory:** `CoordinateModifier（SDKV2.0.0.0）/`
-- **Main File:** `CM.py`
-- **Compatible SDK:** Python SDK v2.0.0.0
-- **Compatible Robot Software Versions:**
-  - Copper v7.7.X.X
-  - Bronze v7.7.X.X
-
-### Version Selection Guide
-
-- **Use SDK v1.7.1.3 version:** If your robot software version is v7.6.X.X
-- **Use SDK v2.0.0.0 version:** If your robot software version is v7.7.X.X or higher
-
-**Note:** Please select the corresponding plugin version based on your robot software version to ensure SDK version compatibility with the robot software version.
+For 2.0.x connection and IP details, see **Connection & IP** below.
 
 ---
 
@@ -379,6 +363,29 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 - **Automatic Separator Detection:** Strp instruction supports automatic detection of multiple separators (comma, semicolon, vertical bar, tab, space, etc.)
 - **Turn Count Synchronization:** Supports bidirectional synchronization between PR `turnCircle` and R registers (`TurnCountToR` / `RToTurnCount`, single-axis replacement)
 
+### Connection & IP
+
+#### SDK v2.0.0.0 / `CM.py`
+
+Follows the official Arm API ([4.1 Robot basics](https://dev.sh-agilebot.com/docs/sdk/zh/1-python/4-methods/4.1-arm.html)) for `Arm` / `connect` / `disconnect`. Uses **`is_connected()`** when available, else **`is_connect()`**.
+
+Controller and teach IPs are resolved in **`__resolve_robot_and_teach_ips()`**: env vars → `Extension().get_robot_ip()` → optional Extension teach-IP getters. On **non-x86_64/amd64**, if the teach IP is missing, the plugin may infer local IPv4 as the **second** `connect` argument; override or disable with the table below.
+
+After connect, a **fingerprint** of controller + teach IP triggers reconnect on change; failed `connect` prints short hints.
+
+| Variable | Summary |
+|----------|---------|
+| `AGILEBOT_ROBOT_IP` / `ROBOT_IP` | Force controller IP |
+| `AGILEBOT_TEACH_PANEL_IP` / `TEACH_PANEL_IP` | Force teach IP (`connect` 2nd arg) |
+| `AGILEBOT_ARM_LOCAL_PROXY` | Explicit true/false; **unset:** x86/amd64 defaults **true** (PC extension), ARM defaults **false** (**Exec format error** if wrong). Do **not** force true on ARM pendants. |
+| `AGILEBOT_AUTO_TEACH_IP_ON_ARM` | `off` disables auto teach IP on ARM |
+| `AGILEBOT_DETECT_TEACH_IP` | `off` disables local IPv4 detection |
+| `AGILEBOT_CM_LOG_FILE` | File path for CM logs |
+
+#### SDK v1.7.1.3 / `CM_oldsdk.py`
+
+Supports `AGILEBOT_ROBOT_IP` / `ROBOT_IP`, fingerprint reconnect, `AGILEBOT_TEACH_PANEL_IP` / `TEACH_PANEL_IP` (**TypeError** → single-arg `connect` if the 1.7 SDK needs it), `AGILEBOT_ARM_LOCAL_PROXY` (falls back to **`Arm()`** if unsupported), and **`is_connected` / `is_connect`** for status. **Omits** v2’s ARM auto-teach IP, extended failure text, and Extension teach-IP probing.
+
 ---
 
 ## Important Notes
@@ -389,19 +396,25 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 2. **Parameter Number:** Position parameter number must be between 1-6 (1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C)
 3. **Register Existence:** Before using R register or PR register, it is recommended to ensure the register has been created (Strp instruction supports automatic R register creation)
 4. **Connection Status:** Ensure the robot is correctly connected and accessible, the plugin will automatically manage connections
-5. **Data Type:** All numeric parameters will automatically undergo type conversion and validation
-6. **Strp Instruction Special Notes:**
+5. **Robot controller software:** Tested and supported on **Bronze v7.8.B.0 (industrial)** and **Copper v7.7.H.1 (collaborative)**; **other versions may be incompatible** — run full checks on your target release before production
+6. **Data Type:** All numeric parameters will automatically undergo type conversion and validation
+7. **Strp Instruction Special Notes:**
    - PR registers require manual creation, please ensure PR registers exist before use
    - R_ID_Status and R_ID_Error registers will be automatically created if they don't exist
    - When status bit is 0, data parsing will not be performed, directly returns error (R_ID_Status=0, R_ID_Error=1)
    - After writing to PR register, data will be immediately verified for correct writing
    - It is recommended to check R_ID_Status and R_ID_Error values before use to determine execution results
-7. **Error Handling:** All instructions return dictionary format, containing success, message/error fields, it is recommended to always check the success field
-8. **Turn Count Constraint:** `TurnCountToR` and `RToTurnCount` only support `-1/0/1` for axis turn flag synchronization
+8. **Error Handling:** All instructions return dictionary format, containing success, message/error fields, it is recommended to always check the success field
+9. **Turn Count Constraint:** `TurnCountToR` and `RToTurnCount` only support `-1/0/1` for axis turn flag synchronization
 
 ---
 
 ## Version History
+
+### V1.4.1 (May 12, 2026)
+- **Docs:** Validated **Bronze v7.8.B.0 (industrial)** and **Copper v7.7.H.1 (collaborative)**; separated **Python SDK folder choice** from validated controller builds.
+- **`CM.py` (2.0):** Unified controller/teach IP resolution; optional ARM auto second `connect` arg; `AGILEBOT_ARM_LOCAL_PROXY` CPU defaults; `is_connected` / `is_connect` compatibility — see **Connection & IP**.
+- **`CM_oldsdk.py` (1.7):** Fallback when two-arg `connect` or `Arm(local_proxy=...)` is unsupported; env IP + fingerprint aligned with 2.0; **unset `AGILEBOT_ARM_LOCAL_PROXY` → `Arm()`** (unlike 2.0 CPU default); no ARM auto-teach or v2-style failure notes.
 
 ### V1.4 (March 25, 2026)
 - Added **TurnCountToR** instruction: Write turn count (`turnCircle`) from PR register to R register
@@ -431,4 +444,4 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 
 ---
 
-**CM Custom Instructions Plugin | Version V1.4 | Updated: March 25, 2026 | © 2026**
+**CM Custom Instructions Plugin | Version V1.4.1 | Updated: May 12, 2026 | © 2026**

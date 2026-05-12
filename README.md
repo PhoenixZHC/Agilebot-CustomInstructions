@@ -1,6 +1,6 @@
 # CM 用户自定义指令插件
 
-**版本 V1.4 | 更新日期：2026年3月25日**
+**版本 V1.4.1 | 更新日期：2026年5月12日**
 
 ---
 
@@ -18,30 +18,14 @@
 
 ## 版本说明
 
-本插件提供两个版本，分别对应不同的SDK版本：
+插件按示教器 **Python SDK** 分两套目录；**工业 Bronze v7.8.B.0**、**协作 Copper v7.7.H.1** 上两档均已测试支持。其他控制软件版本未覆盖，部署前请自测。
 
-### SDK v1.7.1.3 版本
-- **目录：** `CoordinateModifier（SDKV1.7.1.3）/`
-- **主文件：** `CM_oldsdk.py`
-- **兼容SDK：** Python SDK v1.7.1.3
-- **兼容机器人软件版本：**
-  - Copper v7.6.X.X
-  - Bronze v7.6.X.X
+| Python SDK | 目录 | 入口文件 |
+|--------------|------|-----------|
+| **1.7.x** | `CoordinateModifier（SDKV1.7.1.3）/` | `CM_oldsdk.py` |
+| **2.0.x** | `CoordinateModifier（SDKV2.0.0.0）/` | `CM.py` |
 
-### SDK v2.0.0.0 版本
-- **目录：** `CoordinateModifier（SDKV2.0.0.0）/`
-- **主文件：** `CM.py`
-- **兼容SDK：** Python SDK v2.0.0.0
-- **兼容机器人软件版本：**
-  - Copper v7.7.X.X
-  - Bronze v7.7.X.X
-
-### 版本选择建议
-
-- **使用 SDK v1.7.1.3 版本：** 如果您的机器人软件版本为 v7.6.X.X
-- **使用 SDK v2.0.0.0 版本：** 如果您的机器人软件版本为 v7.7.X.X 或更高
-
-**注意：** 请根据您的机器人软件版本选择对应的插件版本，确保SDK版本与机器人软件版本兼容。
+2.0.x 的连接与 IP 说明见下文「连接与 IP」。
 
 ---
 
@@ -379,6 +363,29 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 - **分隔符自动检测：**Strp指令支持自动检测多种分隔符（逗号、分号、竖线、制表符、空格等）
 - **回转数同步：**支持PR `turnCircle` 与R寄存器双向同步（`TurnCountToR` / `RToTurnCount`，单轴替换）
 
+### 连接与 IP
+
+#### SDK v2.0.0.0 / `CM.py`
+
+按官方 [4.1 机器人基础操作](https://dev.sh-agilebot.com/docs/sdk/zh/1-python/4-methods/4.1-arm.html) 使用 `Arm` / `connect` / `disconnect`；在线状态 **`is_connected()`** 优先，旧库回退 **`is_connect()`**。
+
+控制柜与示教器 IP 在 **`__resolve_robot_and_teach_ips()`** 中解析：环境变量 → `Extension().get_robot_ip()` →（若 SDK 有）Extension 示教器 getter。**非 x86_64/amd64** 且未配示教器 IP 时，可用本机 IPv4 推断作为 `connect` 第二参数；可用下表变量关闭或覆盖。
+
+连接成功后按「控制柜 + 示教器」**指纹**变化则断开重连；`connect` 失败会打印简要排查提示。
+
+| 环境变量 | 作用（简） |
+|----------|------------|
+| `AGILEBOT_ROBOT_IP` / `ROBOT_IP` | 强制控制柜 IP |
+| `AGILEBOT_TEACH_PANEL_IP` / `TEACH_PANEL_IP` | 强制示教器 IP（`connect` 第二参数） |
+| `AGILEBOT_ARM_LOCAL_PROXY` | 显式 true/false；**未设**：x86/amd64 默认真（PC 扩展），ARM 等默认假（避免 **Exec format error**）。ARM 示教器勿设真。 |
+| `AGILEBOT_AUTO_TEACH_IP_ON_ARM` | `off` 关闭 ARM 上自动补示教器 IP |
+| `AGILEBOT_DETECT_TEACH_IP` | `off` 关闭本机 IPv4 检测 |
+| `AGILEBOT_CM_LOG_FILE` | 日志落盘路径 |
+
+#### SDK v1.7.1.3 / `CM_oldsdk.py`
+
+支持 `AGILEBOT_ROBOT_IP` / `ROBOT_IP`、指纹重连、`AGILEBOT_TEACH_PANEL_IP` / `TEACH_PANEL_IP`（若 SDK 仅单参 `connect` 则 **TypeError** 回退单参）、`AGILEBOT_ARM_LOCAL_PROXY`（不支持则 **`Arm()`**）、连接状态新名优先旧名。**无** v2 的 ARM 自动示教 IP、扩展失败说明与 Extension 示教器探测。
+
 ---
 
 ## 注意事项
@@ -389,21 +396,28 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 2. **参数编号：**位置参数编号必须在1-6之间（1=X, 2=Y, 3=Z, 4=A, 5=B, 6=C）
 3. **寄存器存在性：**使用R寄存器或PR寄存器前，建议确保寄存器已创建（Strp指令支持自动创建R寄存器）
 4. **连接状态：**确保机器人已正确连接且可访问，插件会自动管理连接
-5. **数据类型：**所有数值参数会自动进行类型转换和验证
-6. **Strp指令特殊说明：**
+5. **机器人软件版本：**以「版本说明」表中工业 **Bronze v7.8.B.0**、协作 **Copper v7.7.H.1** 为准；其它版本可能不兼容，上线前请完整自测
+6. **数据类型：**所有数值参数会自动进行类型转换和验证
+7. **Strp指令特殊说明：**
    - PR寄存器需要手动创建，使用前请确保PR寄存器已存在
    - R_ID_Status 和 R_ID_Error 寄存器如果不存在会自动创建
    - 状态位为0时，不会进行数据拆解，直接返回错误（R_ID_Status=0, R_ID_Error=1）
    - 写入PR寄存器后会立即验证数据是否正确写入
    - 建议在使用前检查 R_ID_Status 和 R_ID_Error 的值来判断执行结果
-7. **错误处理：**所有指令返回字典格式，包含success、message/error字段，建议始终检查success字段
-8. **回转数约束：**`TurnCountToR` 与 `RToTurnCount` 仅支持 `-1/0/1`，用于轴回转标记同步
+8. **错误处理：**所有指令返回字典格式，包含success、message/error字段，建议始终检查success字段
+9. **回转数约束：**`TurnCountToR` 与 `RToTurnCount` 仅支持 `-1/0/1`，用于轴回转标记同步
 
 ---
 
 ## 版本历史
 
+### V1.4.1 (2026年5月12日)
+- **文档：**已测工业 **Bronze v7.8.B.0**、协作 **Copper v7.7.H.1**；区分「按 Python SDK 选目录」与已验证控制软件。
+- **`CM.py`（2.0）：**统一解析控制柜/示教器 IP；ARM 可自动补 `connect` 第二参数；`AGILEBOT_ARM_LOCAL_PROXY` 按 CPU 默认；兼容 `is_connected` / `is_connect`；详情见「连接与 IP」。
+- **`CM_oldsdk.py`（1.7）：**双参 `connect`、`Arm(local_proxy=...)` 不支持时回退；IP 环境变量与指纹重连与 2.0 对齐；**未设 `AGILEBOT_ARM_LOCAL_PROXY` 用 `Arm()`**（与 2.0 的 CPU 默认不同）；无 2.0 的 ARM 自动示教与扩展失败说明。
+
 ### V1.4 (2026年3月25日)
+- **连接管理（`CM.py` / `CM_oldsdk.py`）：**支持环境变量覆盖控制柜 IP；IP 变化时自动断开并重连；`CM.py` 另支持 `teach_panel_ip` 与 `Arm(local_proxy)` 环境变量，并与官方 `connect`/`disconnect` 用法对齐（详见上文「连接与 IP」）
 - 新增 **TurnCountToR** 指令：将PR寄存器中的回转数（turnCircle）写入R寄存器
 - 新增 **RToTurnCount** 指令：将R寄存器中的回转数回写到PR寄存器
 - 增强回转数数据校验：仅允许 `-1/0/1`
@@ -431,4 +445,4 @@ CALL_SERVICE CM, RToTurnCount, PR_ID=10, R_ID=100, Joint_ID=3
 
 ---
 
-**CM 用户自定义指令插件 | 版本 V1.4 | 更新日期：2026年3月25日 | © 2026**
+**CM 用户自定义指令插件 | 版本 V1.4.1 | 更新日期：2026年5月12日 | © 2026**
